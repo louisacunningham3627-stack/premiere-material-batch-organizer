@@ -1,0 +1,14 @@
+dist/
+node_modules/
+*.log
+*.tmp
+.env
+.env.*
+.npmrc
+.vscode/
+.idea/
+.DS_Store
+.premiere-material-space.json
+.premiere-material-space.json.bak
+*.lock
+*.pending-delete

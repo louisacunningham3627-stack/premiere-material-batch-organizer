@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>素材自动整理</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body data-state="ready">
+  <svg class="icon-sprite" aria-hidden="true">
+    <symbol id="icon-box" viewBox="0 0 24 24"><path d="m21 8-9-5-9 5 9 5 9-5Z"/><path d="m3 8 9 5 9-5v8l-9 5-9-5V8Z"/><path d="M12 13v8"/></symbol>
+    <symbol id="icon-folder" viewBox="0 0 24 24"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H10l2 2h6.5A2.5 2.5 0 0 1 21 9.5v7a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 16.5v-9Z"/></symbol>
+    <symbol id="icon-folder-open" viewBox="0 0 24 24"><path d="m3 7 2-2h5l2 2h7a2 2 0 0 1 2 2l-1.5 8.5a2 2 0 0 1-2 1.5H5a2 2 0 0 1-2-2V7Z"/><path d="M3 11h17"/></symbol>
+    <symbol id="icon-arrow-right" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+    <symbol id="icon-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="icon-pause" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></symbol>
+    <symbol id="icon-play" viewBox="0 0 24 24"><path d="m8 5 11 7-11 7V5Z"/></symbol>
+    <symbol id="icon-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.7-4L3 10"/><path d="M3 5v5h5M4 13a8 8 0 0 0 14.7 4L21 14"/><path d="M21 19v-5h-5"/></symbol>
+    <symbol id="icon-settings" viewBox="0 0 24 24"><path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z"/><path d="m19.4 15 .1.1a2 2 0 1 1-2.8 2.8l-.1-.1a2 2 0 0 0-3.4 1.4v.2a2 2 0 1 1-4 0v-.2a2 2 0 0 0-3.4-1.4l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A2 2 0 0 0 1.7 12a2 2 0 1 1 0-4h.2a2 2 0 0 0 1.4-3.4l-.1-.1A2 2 0 1 1 6 1.7l.1.1A2 2 0 0 0 9.5.4V.2a2 2 0 1 1 4 0v.2a2 2 0 0 0 3.4 1.4l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A2 2 0 0 0 21.1 8h.2a2 2 0 1 1 0 4h-.2a2 2 0 0 0-1.7 3Z" transform="translate(0 4)"/></symbol>
+    <symbol id="icon-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="icon-alert" viewBox="0 0 24 24"><path d="M12 4 3 20h18L12 4Z"/><path d="M12 9v5M12 17h.01"/></symbol>
+    <symbol id="icon-shield" viewBox="0 0 24 24"><path d="M12 3 20 6v5c0 5-3.4 8.4-8 10-4.6-1.6-8-5-8-10V6l8-3Z"/><path d="m8 12 2.5 2.5L16 9"/></symbol>
+    <symbol id="icon-file" viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6V3Z"/><path d="M14 3v5h5M9 13h6M9 17h6"/></symbol>
+  </svg>
+
+  <main class="panel" id="panelRoot">
+    <header class="topbar">
+      <div class="brand-lockup">
+        <span class="brand-mark" aria-hidden="true"><svg class="icon"><use href="#icon-box"></use></svg></span>
+        <div class="brand-copy">
+          <h1>素材自动整理</h1>
+          <p>新导入的素材，搬到工程旁边</p>
+        </div>
+      </div>
+      <button class="icon-button" id="settingsButton" type="button" aria-label="打开自动整理设置" aria-controls="settingsDrawer" aria-expanded="false" title="自动整理设置">
+        <svg class="icon"><use href="#icon-settings"></use></svg>
+      </button>
+    </header>
+
+    <section class="project-context" aria-label="当前 Premiere 工程">
+      <div class="context-title">
+        <span class="status-dot" id="projectStatusDot" aria-hidden="true"></span>
+        <span id="projectName">城市纪录片_EP03.prproj</span>
+        <span class="context-meta" id="projectMeta">工程已保存</span>
+      </div>
+      <p class="visually-hidden" id="projectPath">D:\\剪辑项目\\城市纪录片_EP03.prproj</p>
+    </section>
+
+    <section class="state-strip" id="stateStrip" aria-live="polite" aria-atomic="true">
+      <div class="state-main">
+        <span class="state-icon" aria-hidden="true"><svg class="icon"><use href="#icon-check"></use></svg></span>
+        <div class="state-copy">
+          <strong id="stateTitle">自动整理已开启</strong>
+          <span id="stateDescription">新导入的原始素材和下载素材会自动放入下面的文件夹；共享素材库保持原位。</span>
+        </div>
+        <label class="toggle-row" for="autoCollectToggle" title="开启或暂停自动整理">
+          <input id="autoCollectToggle" type="checkbox" checked aria-label="自动整理新素材">
+          <span class="toggle" aria-hidden="true"><span></span></span>
+        </label>
+      </div>
+      <button class="state-action" id="stateAction" type="button" hidden></button>
+    </section>
+
+    <section class="review-section" id="reviewSection" aria-labelledby="reviewHeading" hidden>
+      <div class="review-heading">
+        <h2 id="reviewHeading">待确认素材</h2>
+        <span id="reviewCountLabel">0 项</span>
+      </div>
+      <p class="review-intro">这些文件还在原位置。请逐项处理，插件不会自行猜测。</p>
+      <ul class="review-list" id="reviewList" aria-live="polite"></ul>
+    </section>
+
+    <section class="batch-section" aria-labelledby="batchHeading">
+      <div class="destination-heading">
+        <h2 id="batchHeading">素材会放到这里</h2>
+        <span class="batch-status" id="batchStatus">自动整理中</span>
+      </div>
+      <div class="destination-path" title="当前交接文件夹">
+        <svg class="icon" aria-hidden="true"><use href="#icon-folder"></use></svg>
+        <div>
+          <span>当前交接文件夹</span>
+          <code id="batchPath">素材\004_2026-09-02</code>
+        </div>
+      </div>
+      <div class="batch-rail" aria-hidden="true"><span class="rail-fill" id="railFill"></span></div>
+      <p class="batch-summary">目前已有 <strong id="fileCount">12</strong> 个文件 · <strong id="fileSize">18.6 GB</strong></p>
+      <span class="visually-hidden" id="batchNumber">004</span>
+      <span class="visually-hidden" id="batchName">2026-09-02</span>
+    </section>
+
+    <section class="action-section" aria-label="当前交接操作">
+      <button class="button button-primary" id="openBatchButton" type="button">
+        <svg class="icon"><use href="#icon-folder-open"></use></svg><span>打开当前文件夹</span>
+      </button>
+      <button class="button button-secondary" id="handoffButton" type="button">
+        <svg class="icon"><use href="#icon-check"></use></svg><span>完成这次交接</span>
+      </button>
+      <p id="handoffHint">完成后，新导入素材会进入下一个文件夹。</p>
+    </section>
+
+    <button class="protection-summary" id="protectedCount" type="button" aria-controls="settingsDrawer">
+      <svg class="icon" aria-hidden="true"><use href="#icon-shield"></use></svg>
+      <span id="protectedCountText">3 个共享素材文件夹不会移动</span>
+      <svg class="icon arrow" aria-hidden="true"><use href="#icon-arrow-right"></use></svg>
+    </button>
+
+    <details class="activity-section" id="activityDetails">
+      <summary><span>最近记录</span><svg class="icon" aria-hidden="true"><use href="#icon-arrow-right"></use></svg></summary>
+      <div class="activity-toolbar">
+        <span>最近 4 条</span>
+        <button class="icon-button small" id="refreshButton" type="button" aria-label="重新检查工程" title="重新检查工程"><svg class="icon"><use href="#icon-refresh"></use></svg></button>
+      </div>
+      <ol class="activity-list" id="activityList" aria-live="polite">
+        <li><span class="activity-bullet success"></span><div><strong>已连接当前工程</strong><small>刚刚 · 自动整理已开启</small></div></li>
+        <li><span class="activity-bullet"></span><div><strong>等待新素材</strong><small>新导入的文件会自动整理</small></div></li>
+      </ol>
+    </details>
+  </main>
+
+  <aside class="drawer" id="settingsDrawer" role="dialog" aria-modal="true" aria-labelledby="settingsHeading" aria-hidden="true" hidden>
+    <div class="drawer-header">
+      <h2 id="settingsHeading">自动整理设置</h2>
+      <button class="icon-button" id="closeSettingsButton" type="button" aria-label="关闭自动整理设置"><svg class="icon"><use href="#icon-close"></use></svg></button>
+    </div>
+    <div class="drawer-body">
+      <section class="settings-group">
+        <h3>这些文件夹不搬动</h3>
+        <p class="settings-hint">把后期包、共享音效库等长期素材库放在这里。工程交给另一台电脑后，只需重新选择对应位置。</p>
+        <ul class="protected-list" id="protectedList">
+          <li><span>后期包</span><button class="icon-button small" type="button" aria-label="移除后期包"><svg class="icon"><use href="#icon-close"></use></svg></button></li>
+          <li><span>共享音效库</span><button class="icon-button small" type="button" aria-label="移除共享音效库"><svg class="icon"><use href="#icon-close"></use></svg></button></li>
+          <li><span>品牌字库</span><button class="icon-button small" type="button" aria-label="移除品牌字库"><svg class="icon"><use href="#icon-close"></use></svg></button></li>
+        </ul>
+        <div class="add-protected">
+          <input id="protectedPathInput" type="text" placeholder="还未选择文件夹" aria-label="所选的不搬动文件夹">
+          <button class="button button-secondary" id="addProtectedButton" type="button"><svg class="icon"><use href="#icon-folder"></use></svg><span>选择文件夹</span></button>
+        </div>
+      </section>
+      <section class="settings-group">
+        <h3>整理方式</h3>
+        <div class="policy-row">
+          <svg class="icon" aria-hidden="true"><use href="#icon-check"></use></svg>
+          <div><strong>只整理以后新导入的素材</strong><span>第一次开启时只记录已有素材，不会挪动它们。</span></div>
+        </div>
+        <div class="policy-row">
+          <svg class="icon" aria-hidden="true"><use href="#icon-check"></use></svg>
+          <div><strong>整理后，原位置不保留文件</strong><span>同盘直接移动；跨盘确认新文件可用、Premiere 已重新链接并保存后，再删除原文件。</span></div>
+        </div>
+      </section>
+    </div>
+    <div class="drawer-footer"><button class="button button-primary" id="saveSettingsButton" type="button"><svg class="icon"><use href="#icon-check"></use></svg><span>完成</span></button></div>
+  </aside>
+  <div class="drawer-backdrop" id="drawerBackdrop" hidden></div>
+
+  <script>
+    (() => {
+      const stateData = {
+        ready: { title: '自动整理已开启', desc: '新导入的原始素材和下载素材会自动放入下面的文件夹；共享素材库保持原位。', status: '自动整理中', files: '12', size: '18.6 GB', progress: 0, kind: 'ready', action: '', intent: '', icon: 'check', auto: true, project: '城市纪录片_EP03.prproj', meta: '工程已保存', path: 'D:\\剪辑项目\\城市纪录片_EP03.prproj', activity: [['已连接当前工程', '刚刚 · 自动整理已开启'], ['等待新素材', '新导入的文件会自动整理']] },
+        empty: { title: '请先打开 Premiere 工程', desc: '打开工程后，插件才能找到需要整理的素材。', status: '等待工程', files: '0', size: '0 B', progress: 0, kind: 'empty', action: '重新检查工程', intent: 'refresh', icon: 'folder', auto: false, project: '未打开工程', meta: '等待连接', path: '', activity: [['等待 Premiere 工程', '打开工程后再重新检查']] },
+        unsaved: { title: '请先保存工程', desc: '保存后，插件才能在工程旁边建立素材文件夹。', status: '等待保存', files: '0', size: '0 B', progress: 0, kind: 'warning', action: '重新检查工程', intent: 'refresh', icon: 'alert', auto: false, project: '城市纪录片_EP03', meta: '尚未保存', path: '', activity: [['工程尚未保存', '保存后再重新检查']] },
+        running: { title: '正在检查新素材', desc: '正在识别刚刚导入到工程里的文件。', status: '检查中', files: '12', size: '18.6 GB', progress: 46, kind: 'running', action: '', intent: '', icon: 'refresh', auto: true, project: '城市纪录片_EP03.prproj', meta: '工程已保存', path: 'D:\\剪辑项目\\城市纪录片_EP03.prproj', activity: [['正在检查新素材', '已检查 12 个文件'], ['共享素材保持原位', '后期包等文件夹不会移动']] },
+        waiting: { title: '正在等待文件写完', desc: '这个文件仍在下载或写入，会保持在原位置；写完后自动重试。', status: '等待写完', files: '12', size: '18.6 GB', progress: 0, kind: 'waiting', action: '', intent: '', icon: 'file', auto: true, project: '城市纪录片_EP03.prproj', meta: '工程已保存', path: 'D:\\剪辑项目\\城市纪录片_EP03.prproj', activity: [['采访录音_修正版.wav 仍在写入', '文件保持在原位置'], ['无需手动处理', '写完后会自动重新检查']] },
+        moving: { title: '正在移动素材', desc: '确认新位置可用、Premiere 已重新链接并保存后，才会删除原文件。', status: '移动中', files: '8 / 12', size: '11.2 / 18.6 GB', progress: 68, kind: 'moving', action: '', intent: '', icon: 'refresh', auto: true, project: '城市纪录片_EP03.prproj', meta: '工程已保存', path: 'D:\\剪辑项目\\城市纪录片_EP03.prproj', activity: [['正在移动第 8 个文件', '已完成 68%'], ['原位置文件暂时保留', '等待 Premiere 重新链接并保存']] },
+        paused: { title: '自动整理已暂停', desc: '新导入素材暂时留在原位置，已整理的文件不会重复移动。', status: '已暂停', files: '8', size: '11.2 GB', progress: 0, kind: 'warning', action: '继续自动整理', intent: 'resume', icon: 'pause', auto: false, project: '城市纪录片_EP03.prproj', meta: '工程已保存', path: 'D:\\剪辑项目\\城市纪录片_EP03.prproj', activity: [['自动整理已暂停', '新素材暂时留在原位置'], ['已完成的文件不受影响', '可以安全关闭面板']] },
+        protected: { title: '共享素材已留在原位', desc: '3 个素材来自“不搬动文件夹”，其余素材照常整理。', status: '自动整理中', files: '9', size: '14.1 GB', progress: 0, kind: 'protected', action: '查看不搬动文件夹', intent: 'settings', icon: 'shield', auto: true, project: '城市纪录片_EP03.prproj', meta: '工程已保存', path: 'D:\\剪辑项目\\城市纪录片_EP03.prproj', activity: [['3 个共享素材未移动', '后期包 · 共享音效库 · 品牌字库'], ['其余 9 个文件已整理', '可以继续导入素材']] },
+        conflict: {
+          title: '有 3 个素材需要确认',
+          desc: '文件都还在原位置。逐项确认后，自动整理才会继续。',
+          status: '需要处理',
+          files: '9 / 12',
+          size: '14.8 GB',
+          progress: 0,
+          kind: 'danger',
+          action: '查看待确认素材',
+          intent: 'review',
+          icon: 'alert',
+          auto: false,
+          project: '城市纪录片_EP03.prproj',
+          meta: '工程已保存',
+          path: 'D:\\剪辑项目\\城市纪录片_EP03.prproj',
+          reviews: [
+            {
+              id: 'review-baseline-audio',
+              type: '首次识别',
+              filename: '采访录音_修正版.wav',
+              source: 'C:\\Users\\剪辑师\\Downloads\\采访录音_修正版.wav',
+              reason: '这个工程的旧记录缺少可核对的文件信息，不能判断它原本是否就在工程中。',
+              actions: [['baseline-keep', '视为原有素材', 'secondary'], ['baseline-move', '整理这个文件', 'primary']],
+            },
+            {
+              id: 'review-mapping-main-shot',
+              type: '历史位置',
+              filename: '主镜头.mov',
+              source: 'F:\\下载素材\\主镜头.mov',
+              target: 'D:\\剪辑项目\\素材\\003_2026-09-01\\主镜头.mov',
+              reason: '记录中的新位置文件尚未验证，不能自动让 Premiere 使用。',
+              actions: [['mapping-confirm', '确认使用', 'primary'], ['retry', '重新检查', 'secondary']],
+            },
+            {
+              id: 'review-linked-title',
+              type: '整组素材',
+              filename: '片头合成.aep',
+              source: 'E:\\临时包装\\片头合成\\片头合成.aep',
+              reason: '这是动态链接或工程型素材，单独移动一个文件可能破坏关联内容。',
+              note: '请将所在文件夹加入“不搬动文件夹”，或在 Premiere 中手动重新链接后再检查。',
+              actions: [['reveal', '打开所在位置', 'secondary'], ['retry', '重新检查', 'secondary']],
+            },
+          ],
+          activity: [['3 个素材等待确认', '文件均未移动或覆盖'], ['自动整理已暂停', '完成上方处理后再继续']],
+        },
+        failure: { title: '上次移动还没有完成', desc: '原位置仍有同一素材时，自动整理和交接都会暂停。', status: '需要检查', files: '10 / 12', size: '15.8 / 18.6 GB', progress: 0, kind: 'danger', action: '检查上次整理', intent: 'recover', icon: 'alert', auto: false, project: '城市纪录片_EP03.prproj', meta: '工程已保存', path: 'D:\\剪辑项目\\城市纪录片_EP03.prproj', activity: [['上次移动没有完成', '目标文件与 Premiere 链接等待核对'], ['不会当作整理成功', '处理原位置文件后再检查']] },
+        savefailed: { title: 'Premiere 工程还没有确认保存', desc: '素材已在整理后的位置；请检查链接并重新保存当前工程。', status: '需要检查', files: '12', size: '18.6 GB', progress: 0, kind: 'danger', action: '检查上次整理', intent: 'recover', icon: 'alert', auto: false, project: '城市纪录片_EP03.prproj', meta: '等待重新保存', path: 'D:\\剪辑项目\\城市纪录片_EP03.prproj', activity: [['素材链接已经更新', '等待 Premiere 工程确认保存'], ['自动整理已暂停', '检查完成前不会继续移动素材']] }
+      };
+      const qs = (id) => document.getElementById(id);
+      const icon = (id) => `<svg class="icon"><use href="#icon-${id}"></use></svg>`;
+      const renderReviews = (reviews) => {
+        const section = qs('reviewSection');
+        const list = qs('reviewList');
+        const items = Array.isArray(reviews) ? reviews : [];
+        section.hidden = items.length === 0;
+        qs('reviewCountLabel').textContent = `${items.length} 项`;
+        list.replaceChildren(...items.map((review) => {
+          const item = document.createElement('li');
+          item.className = 'review-item';
+          item.dataset.reviewKind = review.type;
+
+          const type = document.createElement('span');
+          type.className = 'review-type';
+          type.textContent = review.type;
+          const filename = document.createElement('strong');
+          filename.className = 'review-filename';
+          filename.textContent = review.filename;
+          const sourceLabel = document.createElement('span');
+          sourceLabel.className = 'review-path-label';
+          sourceLabel.textContent = '原位置';
+          const source = document.createElement('code');
+          source.className = 'review-path';
+          source.textContent = review.source;
+          const reason = document.createElement('p');
+          reason.className = 'review-reason';
+          reason.textContent = review.reason;
+          item.append(type, filename, sourceLabel, source);
+
+          if (review.target) {
+            const targetLabel = document.createElement('span');
+            targetLabel.className = 'review-path-label';
+            targetLabel.textContent = '记录的新位置';
+            const target = document.createElement('code');
+            target.className = 'review-path';
+            target.textContent = review.target;
+            item.append(targetLabel, target);
+          }
+          item.append(reason);
+
+          if (review.note) {
+            const note = document.createElement('p');
+            note.className = 'review-note';
+            note.textContent = review.note;
+            item.append(note);
+          }
+
+          const actions = document.createElement('div');
+          actions.className = 'review-actions';
+          review.actions.forEach(([action, label, variant]) => {
+            const button = document.createElement('button');
+            button.className = `button button-${variant} review-action`;
+            button.type = 'button';
+            button.dataset.reviewAction = action;
+            button.dataset.reviewId = review.id;
+            button.textContent = label;
+            actions.append(button);
+          });
+          item.append(actions);
+          return item;
+        }));
+      };
+      const setState = (name) => {
+        const data = stateData[name] || stateData.ready;
+        document.body.dataset.state = name;
+        qs('stateTitle').textContent = data.title;
+        qs('stateDescription').textContent = data.desc;
+        qs('batchStatus').textContent = data.status;
+        qs('fileCount').textContent = data.files;
+        qs('fileSize').textContent = data.size;
+        qs('railFill').style.width = `${data.progress}%`;
+        qs('projectName').textContent = data.project;
+        qs('projectMeta').textContent = data.meta;
+        qs('projectPath').textContent = data.path;
+        qs('projectName').title = data.path;
+        const strip = qs('stateStrip');
+        strip.dataset.kind = data.kind;
+        strip.querySelector('.state-icon').innerHTML = icon(data.icon);
+        const action = qs('stateAction');
+        action.hidden = !data.action;
+        action.textContent = data.action;
+        action.dataset.previewIntent = data.intent;
+        qs('autoCollectToggle').checked = data.auto;
+        renderReviews(data.reviews);
+        qs('autoCollectToggle').disabled = ['empty', 'unsaved', 'running', 'moving', 'conflict', 'failure', 'savefailed'].includes(name);
+        const locked = ['empty', 'unsaved', 'running', 'waiting', 'moving', 'conflict', 'failure', 'savefailed'].includes(name);
+        qs('openBatchButton').disabled = ['empty', 'unsaved', 'running', 'moving'].includes(name);
+        qs('handoffButton').disabled = locked;
+        qs('handoffHint').textContent = name === 'waiting'
+          ? '文件写完并自动整理后才能交接。'
+          : ['running', 'moving'].includes(name)
+            ? '素材整理完成后才能交接。'
+          : ['conflict', 'failure', 'savefailed'].includes(name)
+            ? '先完成上面的处理，才能完成交接。'
+            : '完成后，新导入素材会进入下一个文件夹。';
+        const list = qs('activityList');
+        list.innerHTML = data.activity.map((item, i) => `<li><span class="activity-bullet ${i === 0 ? data.kind : ''}"></span><div><strong>${item[0]}</strong><small>${item[1]}</small></div></li>`).join('');
+        window.dispatchEvent(new CustomEvent('batch-collector:state-change', { detail: { state: name, data } }));
+      };
+      let drawerTrigger = null;
+      let drawerHideTimer = null;
+      const openDrawer = () => {
+        const drawer = qs('settingsDrawer');
+        if (drawerHideTimer) clearTimeout(drawerHideTimer);
+        drawerTrigger = document.activeElement;
+        drawer.hidden = false;
+        drawer.setAttribute('aria-hidden', 'false');
+        qs('settingsButton').setAttribute('aria-expanded', 'true');
+        qs('drawerBackdrop').hidden = false;
+        setTimeout(() => { drawer.classList.add('is-open'); qs('closeSettingsButton').focus(); }, 0);
+      };
+      const closeDrawer = () => {
+        const drawer = qs('settingsDrawer');
+        drawer.classList.remove('is-open');
+        drawer.setAttribute('aria-hidden', 'true');
+        qs('settingsButton').setAttribute('aria-expanded', 'false');
+        qs('drawerBackdrop').hidden = true;
+        drawerHideTimer = setTimeout(() => { drawer.hidden = true; }, 180);
+        if (drawerTrigger && typeof drawerTrigger.focus === 'function') drawerTrigger.focus();
+      };
+      const showActivity = () => {
+        const details = qs('activityDetails');
+        details.open = true;
+        details.scrollIntoView({ block: 'nearest' });
+      };
+      const showReviews = () => {
+        const section = qs('reviewSection');
+        if (!section.hidden) section.scrollIntoView({ block: 'start' });
+      };
+      qs('settingsButton').addEventListener('click', openDrawer);
+      qs('protectedCount').addEventListener('click', openDrawer);
+      qs('closeSettingsButton').addEventListener('click', closeDrawer);
+      qs('drawerBackdrop').addEventListener('click', closeDrawer);
+      qs('saveSettingsButton').addEventListener('click', closeDrawer);
+      qs('refreshButton').addEventListener('click', () => window.dispatchEvent(new CustomEvent('batch-collector:refresh')));
+      qs('openBatchButton').addEventListener('click', () => window.dispatchEvent(new CustomEvent('batch-collector:open-batch')));
+      qs('handoffButton').addEventListener('click', () => window.dispatchEvent(new CustomEvent('batch-collector:handoff')));
+      qs('autoCollectToggle').addEventListener('change', (event) => window.dispatchEvent(new CustomEvent('batch-collector:auto-collect', { detail: { enabled: event.target.checked } })));
+      qs('stateAction').addEventListener('click', () => {
+        const intent = qs('stateAction').dataset.previewIntent;
+        if (document.body.classList.contains('preview-mode') && intent === 'settings') openDrawer();
+        if (document.body.classList.contains('preview-mode') && intent === 'activity') showActivity();
+        if (intent === 'review') showReviews();
+        window.dispatchEvent(new CustomEvent('batch-collector:state-action', { detail: { state: document.body.dataset.state } }));
+      });
+      qs('reviewList').addEventListener('click', (event) => {
+        const button = event.target.closest ? event.target.closest('button[data-review-action]') : null;
+        if (!button) return;
+        window.dispatchEvent(new CustomEvent('batch-collector:review-action', {
+          detail: { action: button.dataset.reviewAction, reviewId: button.dataset.reviewId },
+        }));
+      });
+      document.addEventListener('keydown', (event) => {
+        const drawer = qs('settingsDrawer');
+        if (!drawer.classList.contains('is-open')) return;
+        if (event.key === 'Escape') { event.preventDefault(); closeDrawer(); return; }
+        if (event.key !== 'Tab') return;
+        const focusable = Array.from(drawer.querySelectorAll('button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])'));
+        if (!focusable.length) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+      });
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('preview') === '1') document.body.classList.add('preview-mode');
+      setState(params.get('state') || 'ready');
+      window.BatchCollectorPanel = { setState, states: Object.keys(stateData) };
+    })();
+  </script>
+  <script src="src/core.js"></script>
+  <script src="src/scan-policy.js"></script>
+  <script src="src/state.js"></script>
+  <script src="src/transaction.js"></script>
+  <script src="src/recovery.js"></script>
+  <script src="src/coordination.js"></script>
+  <script src="src/premiere-adapter.js"></script>
+  <script src="src/storage.js"></script>
+  <script src="src/main.js"></script>
+</body>
+</html>
