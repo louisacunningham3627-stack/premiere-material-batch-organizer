@@ -60,7 +60,7 @@ npm run preview
 
 浏览器预览包含已开启、未打开工程、工程未保存、检查中、等待写完、移动中、已暂停、保护目录命中、规则冲突、移动失败和等待重新保存十一种状态。
 
-构建后，在 Adobe 的 UXP 开发者工具中添加：
+普通安装不需要 Adobe UXP Developer Tool。只有开发调试时，才可选择在该工具中添加：
 
 ```text
 dist\manifest.json

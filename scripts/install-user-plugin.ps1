@@ -27,7 +27,7 @@ function Get-FileInventory {
 
   $resolvedRoot = (Resolve-Path -LiteralPath $Root).Path.TrimEnd("\")
   return @(
-    Get-ChildItem -File -Recurse -LiteralPath $resolvedRoot | ForEach-Object {
+    Get-ChildItem -File -Recurse -Force -LiteralPath $resolvedRoot | ForEach-Object {
       [pscustomobject]@{
         RelativePath = $_.FullName.Substring($resolvedRoot.Length).TrimStart("\")
         Hash = Get-Sha256 -Path $_.FullName
@@ -78,6 +78,30 @@ $stagingPath = Join-Path $stagingRoot ("{0}-{1}" -f $pluginId, $runId)
 $backupPath = Join-Path $backupRoot ("{0}-before-{1}" -f $pluginId, $runId)
 $failedPath = Join-Path $backupRoot ("{0}-failed-{1}" -f $pluginId, $runId)
 
+if (Test-Path -LiteralPath $targetPath) {
+  if (-not (Test-Path -LiteralPath $targetPath -PathType Container)) {
+    throw "安装目标已存在但不是文件夹，已拒绝覆盖：$targetPath"
+  }
+
+  $targetItem = Get-Item -Force -LiteralPath $targetPath
+  if (($targetItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "安装目标是重解析点，已拒绝移动或覆盖：$targetPath"
+  }
+
+  $existingManifestPath = Join-Path $targetPath "manifest.json"
+  if (-not (Test-Path -LiteralPath $existingManifestPath -PathType Leaf)) {
+    throw "安装目标不是可识别的当前插件，缺少 manifest.json：$targetPath"
+  }
+  try {
+    $existingManifest = Get-Content -Raw -Encoding UTF8 -LiteralPath $existingManifestPath | ConvertFrom-Json
+  } catch {
+    throw "安装目标的 manifest.json 无法读取，已拒绝覆盖：$targetPath"
+  }
+  if ($existingManifest.id -ne $pluginId) {
+    throw "安装目标属于其他插件，已拒绝覆盖：$($existingManifest.id)"
+  }
+}
+
 New-Item -ItemType Directory -Path $TargetRoot, $stagingRoot, $backupRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $stagingPath -Force | Out-Null
 Get-ChildItem -Force -LiteralPath $BuildPath | Copy-Item -Destination $stagingPath -Recurse -Force
@@ -90,25 +114,44 @@ if ($sourceInventory.Count -eq 0 -or $stageDiff.Count -ne 0) {
 }
 
 $previousInstall = Test-Path -LiteralPath $targetPath -PathType Container
+$previousInstallMoved = $false
+$newInstallMoved = $false
 try {
   if ($previousInstall) {
     Move-Item -LiteralPath $targetPath -Destination $backupPath
+    $previousInstallMoved = $true
   }
 
   Move-Item -LiteralPath $stagingPath -Destination $targetPath
+  $newInstallMoved = $true
   $installedInventory = Get-FileInventory -Root $targetPath
   $installDiff = @(Compare-Object $sourceInventory $installedInventory -Property RelativePath, Hash)
   if ($installDiff.Count -ne 0) {
     throw "已安装插件未通过 SHA-256 校验。"
   }
 } catch {
-  if (Test-Path -LiteralPath $targetPath) {
-    Move-Item -LiteralPath $targetPath -Destination $failedPath
+  $installError = $_
+  $recoveryErrors = @()
+  if ($newInstallMoved -and (Test-Path -LiteralPath $targetPath)) {
+    try {
+      Move-Item -LiteralPath $targetPath -Destination $failedPath
+    } catch {
+      $recoveryErrors += "无法保留失败的新版本：$($_.Exception.Message)"
+    }
   }
-  if ($previousInstall -and (Test-Path -LiteralPath $backupPath) -and -not (Test-Path -LiteralPath $targetPath)) {
-    Move-Item -LiteralPath $backupPath -Destination $targetPath
+  if ($previousInstallMoved -and (Test-Path -LiteralPath $backupPath) -and -not (Test-Path -LiteralPath $targetPath)) {
+    try {
+      Move-Item -LiteralPath $backupPath -Destination $targetPath
+    } catch {
+      $recoveryErrors += "无法自动恢复旧版；旧版仍位于 $backupPath：$($_.Exception.Message)"
+    }
+  } elseif ($previousInstallMoved -and (Test-Path -LiteralPath $backupPath) -and (Test-Path -LiteralPath $targetPath)) {
+    $recoveryErrors += "安装目标被占用，旧版仍位于：$backupPath"
   }
-  throw
+  if ($recoveryErrors.Count -gt 0) {
+    throw "安装失败：$($installError.Exception.Message)；恢复提示：$($recoveryErrors -join '；')"
+  }
+  throw $installError
 }
 
 [pscustomobject]@{
