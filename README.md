@@ -68,6 +68,19 @@ dist\manifest.json
 
 最低宿主版本为 Premiere Pro `25.6.0`。完整的第一次测试步骤见 [运行验收清单](docs/运行验收清单.md)。
 
+## 安装与卸载
+
+安装或更新前，先保存工程并正常关闭所有 Premiere 窗口。随后运行：
+
+```powershell
+npm run check
+npm run install:user
+```
+
+安装脚本会先把构建结果复制到唯一暂存目录，逐文件核对 SHA-256，再切换到 Premiere 实际扫描的用户级 UXP 插件目录。发现旧版时会先移入可恢复备份；Premiere 仍在运行时会直接拒绝安装。
+
+启动 Premiere 后，在“窗口 > UXP 插件”中打开“赫朝素材自动整理”。需要卸载时，关闭 Premiere 后运行 `npm run uninstall:user`；卸载脚本只把插件移出扫描目录并保留恢复副本，不直接删除。
+
 ## 首版限制
 
 - 实机测试状态：尚未在 Premiere `26.0.1` 中完成真实侧载。
