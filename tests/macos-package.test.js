@@ -48,6 +48,7 @@ test("macOS 安装链拒绝符号链接并完整校验交付清单", () => {
     assert.match(source, /"\$PLUTIL_BIN" -extract/);
     assert.doesNotMatch(source, /-print -quit/);
     assert.match(source, /validate_plugin_directory/);
+    assert.ok(source.includes('*//*|*/./*|*/../*|*/.|*/..'), "目标根目录必须拒绝重复分隔符和点段");
   }
 
   const targetCheck = installScript.indexOf('validate_plugin_directory "$TARGET_PATH" "既有安装目标"');

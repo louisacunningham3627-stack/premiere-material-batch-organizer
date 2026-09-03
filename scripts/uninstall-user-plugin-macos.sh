@@ -10,9 +10,6 @@ while [[ $# -gt 0 ]]; do
     *) echo "未知参数：$1" >&2; exit 2;;
   esac
 done
-TARGET_PATH="$TARGET_ROOT/$PLUGIN_ID"
-UXP_ROOT="$(dirname "$(dirname "$TARGET_ROOT")")"
-BACKUP_ROOT="$UXP_ROOT/PluginBackups"
 fail() { echo "卸载失败：$1" >&2; exit 1; }
 path_present() { [[ -e "$1" || -L "$1" ]]; }
 make_run_suffix() {
@@ -49,11 +46,15 @@ validate_plugin_directory() {
   [[ -n "$plugin_version" ]] || fail "$label 缺少版本号。"
 }
 
+while [[ "$TARGET_ROOT" != "/" && "$TARGET_ROOT" == */ ]]; do TARGET_ROOT="${TARGET_ROOT%/}"; done
 case "$TARGET_ROOT" in
-  ""|/|.) fail "卸载目标根目录过宽或为空，已拒绝：$TARGET_ROOT";;
+  ""|/|.|*//*|*/./*|*/../*|*/.|*/..) fail "卸载目标根目录过宽或包含不安全路径段，已拒绝：$TARGET_ROOT";;
   /*) ;;
   *) fail "卸载目标根目录必须是绝对路径：$TARGET_ROOT";;
 esac
+TARGET_PATH="$TARGET_ROOT/$PLUGIN_ID"
+UXP_ROOT="$(dirname "$(dirname "$TARGET_ROOT")")"
+BACKUP_ROOT="$UXP_ROOT/PluginBackups"
 [[ -n "$UXP_ROOT" && "$UXP_ROOT" != "/" && "$UXP_ROOT" != "." ]] || fail "无法从卸载目标安全派生备份目录。"
 RUN_ID="$(date +%Y%m%d-%H%M%S)-$(make_run_suffix)"
 BACKUP_PATH="$BACKUP_ROOT/${PLUGIN_ID}-uninstalled-${RUN_ID}"

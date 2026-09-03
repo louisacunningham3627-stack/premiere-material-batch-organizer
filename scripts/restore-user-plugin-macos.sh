@@ -38,8 +38,9 @@ validate_plugin_directory() {
   plugin_version="$(manifest_value "$plugin_path/manifest.json" version)" || fail "无法读取$label的版本号。"
   [[ -n "$plugin_version" ]] || fail "$label 缺少版本号。"
 }
+while [[ "$TARGET_ROOT" != "/" && "$TARGET_ROOT" == */ ]]; do TARGET_ROOT="${TARGET_ROOT%/}"; done
 case "$TARGET_ROOT" in
-  ""|/|.) fail "恢复目标根目录过宽或为空，已拒绝：$TARGET_ROOT";;
+  ""|/|.|*//*|*/./*|*/../*|*/.|*/..) fail "恢复目标根目录过宽或包含不安全路径段，已拒绝：$TARGET_ROOT";;
   /*) ;;
   *) fail "恢复目标根目录必须是绝对路径：$TARGET_ROOT";;
 esac
