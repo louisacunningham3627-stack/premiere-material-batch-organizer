@@ -34,7 +34,7 @@ test("macOS 安装链路使用自包含中文脚本且不依赖 Node", () => {
     assert.doesNotMatch(source, /\bnode\s+-e\b/);
     assert.match(source, /Adobe Premiere Pro/);
   }
-  assert.match(restoreScript, /! -L "\$BACKUP_PATH"/);
+  assert.match(restoreScript, /validate_plugin_directory "\$BACKUP_PATH" "插件备份"/);
   assert.match(uninstallScript, /恢复-macOS\.sh/);
   assert.match(uninstallScript, /restore-user-plugin-macos\.sh/);
   assert.match(packageScript, /plugin/);
@@ -44,18 +44,34 @@ test("macOS 安装链路使用自包含中文脚本且不依赖 Node", () => {
 test("macOS 安装链拒绝符号链接并完整校验交付清单", () => {
   for (const source of [installScript, uninstallScript, restoreScript]) {
     assert.match(source, /path_present\(\) \{ \[\[ -e "\$1" \|\| -L "\$1" \]\]; \}/);
-    assert.match(source, /PLUTIL_BIN="\$\{PLUTIL_BIN:-\/usr\/bin\/plutil\}"/);
+    assert.match(source, /PLUTIL_BIN="\$\{PLUTIL_BIN:-\$\(command -v plutil \|\| true\)\}"/);
     assert.match(source, /"\$PLUTIL_BIN" -extract/);
-    assert.doesNotMatch(source, /\$\(\$\(command -v plutil/);
+    assert.doesNotMatch(source, /-print -quit/);
+    assert.match(source, /validate_plugin_directory/);
   }
 
-  const targetCheck = installScript.indexOf('reject_symlinks "$TARGET_PATH" "既有安装目标"');
+  const targetCheck = installScript.indexOf('validate_plugin_directory "$TARGET_PATH" "既有安装目标"');
   const targetMove = installScript.indexOf('mv "$TARGET_PATH" "$BACKUP_PATH"');
   assert.ok(targetCheck >= 0 && targetCheck < targetMove, "移动旧版前必须拒绝目标目录内部的符号链接");
   assert.match(installScript, /自包含安装包缺少 SHA256SUMS\.txt，已拒绝安装/);
   assert.match(installScript, /package_file_count/);
   assert.match(installScript, /未列入 SHA-256 清单/);
   assert.match(installScript, /安装切换前目标路径再次出现/);
+  assert.match(installScript, /切换前安装目标/);
+  assert.match(installScript, /切换前备份路径再次出现/);
+  assert.match(installScript, /自包含安装包不允许改用外部构建目录/);
+  assert.match(installScript, /安装目标根目录必须是绝对路径/);
+  assert.match(uninstallScript, /卸载切换前安装目标/);
+  assert.match(uninstallScript, /卸载切换前备份路径再次出现/);
+  assert.match(uninstallScript, /卸载目标根目录必须是绝对路径/);
+  assert.match(restoreScript, /恢复切换前插件备份/);
+  assert.match(restoreScript, /恢复目标根目录必须是绝对路径/);
+  const restoreBackupCheck = restoreScript.indexOf('validate_plugin_directory "$BACKUP_PATH" "恢复切换前插件备份"');
+  const restoreTargetCheck = restoreScript.indexOf('path_present "$TARGET_PATH" && fail "恢复切换前目标路径再次出现');
+  const restoreMove = restoreScript.indexOf('mv "$BACKUP_PATH" "$TARGET_PATH"');
+  assert.ok(restoreBackupCheck >= 0 && restoreBackupCheck < restoreTargetCheck && restoreTargetCheck < restoreMove,
+    "恢复前必须先重验备份，再紧邻移动检查目标竞态");
+  assert.match(restoreScript, /validate_plugin_directory "\$TARGET_PATH" "恢复结果"/);
   assert.match(installScript, /find \. -type f ! -path '\.\/SHA256SUMS\.txt'/);
   assert.doesNotMatch(installScript, /! -name SHA256SUMS\.txt/);
 
@@ -96,6 +112,8 @@ test("已生成的 macOS ZIP 具有自包含结构和完整 SHA-256 清单", { s
   }
   const manifest = JSON.parse(fs.readFileSync(path.join(packageRoot, "plugin/manifest.json"), "utf8"));
   assert.equal(manifest.id, "com.hechao.premiere.material-batch-organizer");
+  assert.equal(manifest.version, require("../package.json").version);
+  assert.equal(manifest.host.app, "premierepro");
 
   const internalLines = fs.readFileSync(path.join(packageRoot, "SHA256SUMS.txt"), "utf8")
     .split(/\r?\n/).filter(Boolean);

@@ -103,8 +103,10 @@ for (const relative of required) {
   if (!existsSync(path.join(packageRoot, relative))) throw new Error(`macOS ZIP 缺少必要文件：${relative}`);
 }
 const zippedManifest = JSON.parse(await readFile(path.join(packageRoot, "plugin", "manifest.json"), "utf8"));
-if (zippedManifest.id !== "com.hechao.premiere.material-batch-organizer" || zippedManifest.version !== packageJson.version) {
-  throw new Error("macOS ZIP 中 manifest 身份或版本不正确");
+if (zippedManifest.id !== "com.hechao.premiere.material-batch-organizer"
+  || zippedManifest.version !== packageJson.version
+  || zippedManifest.host?.app !== "premierepro") {
+  throw new Error("macOS ZIP 中 manifest 身份、版本或宿主不正确");
 }
 const listedHashes = (await readFile(path.join(packageRoot, "SHA256SUMS.txt"), "utf8"))
   .split(/\r?\n/).filter((line) => line.length > 0);

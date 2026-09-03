@@ -10,11 +10,12 @@ if [[ -d "$SCRIPT_DIR/plugin" || -L "$SCRIPT_DIR/plugin" ]]; then
   BUILD_PATH="$SCRIPT_DIR/plugin"
   PACKAGE_MODE=1
 fi
+BUILD_PATH_OVERRIDDEN=0
 TARGET_ROOT="${HOME}/Library/Application Support/Adobe/UXP/Plugins/External"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --build-path) BUILD_PATH="$2"; shift 2;;
+    --build-path) BUILD_PATH="$2"; BUILD_PATH_OVERRIDDEN=1; shift 2;;
     --target-root) TARGET_ROOT="$2"; shift 2;;
     *) echo "未知参数：$1" >&2; exit 2;;
   esac
@@ -24,26 +25,53 @@ TARGET_PATH="$TARGET_ROOT/$PLUGIN_ID"
 UXP_ROOT="$(dirname "$(dirname "$TARGET_ROOT")")"
 STAGING_ROOT="$UXP_ROOT/PluginStaging"
 BACKUP_ROOT="$UXP_ROOT/PluginBackups"
-RUN_ID="$(date +%Y%m%d-%H%M%S)-$(uuidgen | tr -d '-' | cut -c1-8)"
-STAGING_PATH="$STAGING_ROOT/${PLUGIN_ID}-${RUN_ID}"
-BACKUP_PATH="$BACKUP_ROOT/${PLUGIN_ID}-before-${RUN_ID}"
-FAILED_PATH="$BACKUP_ROOT/${PLUGIN_ID}-failed-${RUN_ID}"
-
 fail() { echo "安装失败：$1" >&2; exit 1; }
 path_present() { [[ -e "$1" || -L "$1" ]]; }
+make_run_suffix() {
+  local suffix=""
+  if command -v uuidgen >/dev/null 2>&1; then
+    suffix="$(uuidgen 2>/dev/null | tr -d '-' | cut -c1-8)" || suffix=""
+  fi
+  [[ -n "$suffix" ]] || suffix="$$-$RANDOM"
+  printf '%s' "$suffix"
+}
 reject_symlinks() {
   local root="$1"
   local label="$2"
   [[ ! -L "$root" ]] || fail "$label 不能是符号链接：$root"
   local link
-  link="$(find "$root" -type l -print -quit)"
+  link="$(find "$root" -type l -print | LC_ALL=C sed -n '1p')"
   [[ -z "$link" ]] || fail "$label 包含符号链接：$link"
 }
-PLUTIL_BIN="${PLUTIL_BIN:-/usr/bin/plutil}"
+PLUTIL_BIN="${PLUTIL_BIN:-$(command -v plutil || true)}"
 [[ -x "$PLUTIL_BIN" ]] || fail "找不到 macOS 自带的 plutil，无法安全读取 manifest.json。"
 manifest_value() {
   "$PLUTIL_BIN" -extract "$2" raw -o - "$1" 2>/dev/null
 }
+validate_plugin_directory() {
+  local plugin_path="$1"
+  local label="$2"
+  [[ -d "$plugin_path" && ! -L "$plugin_path" ]] || fail "$label 不是普通插件文件夹：$plugin_path"
+  reject_symlinks "$plugin_path" "$label"
+  [[ -f "$plugin_path/manifest.json" && ! -L "$plugin_path/manifest.json" ]] || fail "$label 缺少普通 manifest.json。"
+  [[ "$(manifest_value "$plugin_path/manifest.json" id)" == "$PLUGIN_ID" ]] || fail "$label 属于其他插件。"
+  [[ "$(manifest_value "$plugin_path/manifest.json" host.app)" == "premierepro" ]] || fail "$label 不是 Premiere Pro 插件。"
+  local plugin_version
+  plugin_version="$(manifest_value "$plugin_path/manifest.json" version)" || fail "无法读取$label的版本号。"
+  [[ -n "$plugin_version" ]] || fail "$label 缺少版本号。"
+}
+
+[[ "$PACKAGE_MODE" -eq 0 || "$BUILD_PATH_OVERRIDDEN" -eq 0 ]] || fail "自包含安装包不允许改用外部构建目录。"
+case "$TARGET_ROOT" in
+  ""|/|.) fail "安装目标根目录过宽或为空，已拒绝：$TARGET_ROOT";;
+  /*) ;;
+  *) fail "安装目标根目录必须是绝对路径：$TARGET_ROOT";;
+esac
+[[ -n "$UXP_ROOT" && "$UXP_ROOT" != "/" && "$UXP_ROOT" != "." ]] || fail "无法从安装目标安全派生暂存与备份目录。"
+RUN_ID="$(date +%Y%m%d-%H%M%S)-$(make_run_suffix)"
+STAGING_PATH="$STAGING_ROOT/${PLUGIN_ID}-${RUN_ID}"
+BACKUP_PATH="$BACKUP_ROOT/${PLUGIN_ID}-before-${RUN_ID}"
+FAILED_PATH="$BACKUP_ROOT/${PLUGIN_ID}-failed-${RUN_ID}"
 
 if /usr/bin/pgrep -if "Adobe Premiere Pro" >/dev/null 2>&1; then
   echo "Premiere Pro 正在运行。请先保存工程并正常关闭 Premiere，再安装插件。" >&2
@@ -63,10 +91,7 @@ if [[ "$PACKAGE_MODE" -eq 0 ]]; then
 fi
 
 if path_present "$TARGET_PATH"; then
-  [[ -d "$TARGET_PATH" && ! -L "$TARGET_PATH" ]] || fail "安装目标不是普通插件文件夹，已拒绝覆盖：$TARGET_PATH"
-  reject_symlinks "$TARGET_PATH" "既有安装目标"
-  [[ -f "$TARGET_PATH/manifest.json" && ! -L "$TARGET_PATH/manifest.json" ]] || fail "安装目标缺少普通 manifest.json，已拒绝覆盖。"
-  [[ "$(manifest_value "$TARGET_PATH/manifest.json" id)" == "$PLUGIN_ID" ]] || fail "安装目标属于其他插件，已拒绝覆盖。"
+  validate_plugin_directory "$TARGET_PATH" "既有安装目标"
 fi
 
 verify_package_checksums() {
@@ -130,7 +155,8 @@ if path_present "$TARGET_ROOT"; then
   [[ ! -L "$TARGET_ROOT" ]] || fail "安装目标根目录不能是符号链接：$TARGET_ROOT"
 fi
 mkdir -p "$TARGET_ROOT" "$STAGING_ROOT" "$BACKUP_ROOT"
-[[ ! -L "$STAGING_ROOT" && ! -L "$BACKUP_ROOT" ]] || fail "插件暂存或备份根目录不能是符号链接。"
+[[ -d "$TARGET_ROOT" && ! -L "$TARGET_ROOT" ]] || fail "安装目标根目录必须是普通文件夹。"
+[[ -d "$STAGING_ROOT" && ! -L "$STAGING_ROOT" && -d "$BACKUP_ROOT" && ! -L "$BACKUP_ROOT" ]] || fail "插件暂存或备份根目录必须是普通文件夹。"
 path_present "$STAGING_PATH" && fail "暂存路径已存在，已拒绝覆盖：$STAGING_PATH"
 path_present "$BACKUP_PATH" && fail "备份路径已存在，已拒绝覆盖：$BACKUP_PATH"
 path_present "$FAILED_PATH" && fail "失败备份路径已存在，已拒绝覆盖：$FAILED_PATH"
@@ -157,7 +183,13 @@ rollback() {
 }
 trap rollback EXIT
 
-if path_present "$TARGET_PATH"; then mv "$TARGET_PATH" "$BACKUP_PATH"; previous_moved=1; fi
+path_present "$BACKUP_PATH" && fail "切换前备份路径再次出现，已停止安装：$BACKUP_PATH"
+if path_present "$TARGET_PATH"; then
+  validate_plugin_directory "$TARGET_PATH" "切换前安装目标"
+  path_present "$BACKUP_PATH" && fail "切换前备份路径再次出现，已停止安装：$BACKUP_PATH"
+  mv "$TARGET_PATH" "$BACKUP_PATH"
+  previous_moved=1
+fi
 path_present "$TARGET_PATH" && fail "安装切换前目标路径再次出现，已停止安装：$TARGET_PATH"
 mv "$STAGING_PATH" "$TARGET_PATH"; new_moved=1
 diff -u <(inventory "$BUILD_PATH") <(inventory "$TARGET_PATH") >/dev/null || { echo "安装后 SHA-256 校验失败。" >&2; exit 1; }
