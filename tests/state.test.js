@@ -388,3 +388,43 @@ test("恢复旧 Windows 状态键时按素材真实路径迁移，且相对路�
   );
   assert.equal(updated.pathMappings["/Users/Editor/Downloads/Voice.WAV"][0].targetFingerprint.mtimeMs, 10);
 });
+
+test("恢复状态时会规范旧工程键，并拒绝规范后冲突的工程记录", () => {
+  const projectPath = "C:\\work\\edit.prproj";
+  let raw = State.createState("C:\\work", now);
+  raw = State.registerProject(raw, projectPath, "edit.prproj", now);
+  raw = State.markProjectBaseline(raw, projectPath, [], now);
+  const canonicalKey = State.projectKey(projectPath);
+  const project = raw.projects[canonicalKey];
+  raw.projects = {
+    "c:\\work\\sub\\..\\edit.prproj": project,
+  };
+
+  const hydrated = State.hydrateState(raw, "C:\\work", now);
+  assert.equal(State.projectHasBaseline(hydrated, "C:\\work\\sub\\..\\edit.prproj"), true);
+  assert.deepEqual(Object.keys(hydrated.projects), [canonicalKey]);
+
+  raw.projects[canonicalKey] = Object.assign({}, project, { displayName: "冲突工程" });
+  assert.throws(
+    () => State.hydrateState(raw, "C:\\work", now),
+    (error) => error.code === "MATERIAL_BATCH_STATE_INVALID" && /冲突的工程记录/.test(error.message),
+  );
+});
+
+test("恢复状态时拒绝规范后冲突的工程基线素材记录", () => {
+  const projectPath = "C:\\work\\edit.prproj";
+  let raw = State.createState("C:\\work", now);
+  raw = State.registerProject(raw, projectPath, "edit.prproj", now);
+  const key = State.projectKey(projectPath);
+  raw.projects[key].baselineEstablished = true;
+  raw.projects[key].baselineVersion = 1;
+  raw.projects[key].baselineMedia = {
+    "c:\\media\\temp\\..\\clip.wav": { size: 1, mtimeMs: 10 },
+    "c:\\media\\clip.wav": { size: 2, mtimeMs: 20 },
+  };
+
+  assert.throws(
+    () => State.hydrateState(raw, "C:\\work", now),
+    (error) => error.code === "MATERIAL_BATCH_STATE_INVALID" && /冲突的工程基线记录/.test(error.message),
+  );
+});

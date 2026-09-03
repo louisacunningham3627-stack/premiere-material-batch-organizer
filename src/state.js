@@ -168,7 +168,7 @@
           return { libraryId: library.libraryId, label: library.label };
         })
       : [];
-    state.projects = objectOrEmpty(raw.projects);
+    var storedProjects = objectOrEmpty(raw.projects);
     state.knownMedia = {};
     Object.keys(objectOrEmpty(raw.knownMedia)).forEach(function (sourceKey) {
       var value = clone(raw.knownMedia[sourceKey]);
@@ -185,18 +185,42 @@
         mergeKeyedValue(state.pathMappings, canonicalSourceKey, safeMappings);
       }
     });
-    state.projects = Object.keys(state.projects).reduce(function (projects, projectKey) {
-      var project = projects[projectKey];
+    state.projects = Object.keys(storedProjects).reduce(function (projects, storedProjectKey) {
+      var normalizedProjectKey = Core.normalizePathForComparison(storedProjectKey);
+      if (!normalizedProjectKey) {
+        var emptyProjectKeyError = new Error("素材空间状态包含无效的工程路径，已停止自动整理");
+        emptyProjectKeyError.code = "MATERIAL_BATCH_STATE_INVALID";
+        throw emptyProjectKeyError;
+      }
+      var project = storedProjects[storedProjectKey];
       if (project && project.baselineMedia && typeof project.baselineMedia === "object") {
         var migratedBaseline = {};
         Object.keys(project.baselineMedia).forEach(function (sourceKey) {
           var entry = project.baselineMedia[sourceKey];
-          migratedBaseline[canonicalKey(sourceKey, entry)] = entry;
+          var normalizedSourceKey = canonicalKey(sourceKey, entry);
+          if (Object.prototype.hasOwnProperty.call(migratedBaseline, normalizedSourceKey)) {
+            if (JSON.stringify(migratedBaseline[normalizedSourceKey]) !== JSON.stringify(entry)) {
+              var duplicateBaselineKeyError = new Error("素材空间状态包含冲突的工程基线记录，已停止自动整理");
+              duplicateBaselineKeyError.code = "MATERIAL_BATCH_STATE_INVALID";
+              throw duplicateBaselineKeyError;
+            }
+            return;
+          }
+          migratedBaseline[normalizedSourceKey] = entry;
         });
         project.baselineMedia = migratedBaseline;
       }
+      if (Object.prototype.hasOwnProperty.call(projects, normalizedProjectKey)) {
+        if (JSON.stringify(projects[normalizedProjectKey]) !== JSON.stringify(project)) {
+          var duplicateProjectKeyError = new Error("素材空间状态包含冲突的工程记录，已停止自动整理");
+          duplicateProjectKeyError.code = "MATERIAL_BATCH_STATE_INVALID";
+          throw duplicateProjectKeyError;
+        }
+        return projects;
+      }
+      projects[normalizedProjectKey] = project;
       return projects;
-    }, state.projects);
+    }, {});
     state.pendingTransaction = raw.pendingTransaction && typeof raw.pendingTransaction === "object" ? clone(raw.pendingTransaction) : null;
     state.pendingProjectSave = raw.pendingProjectSave && typeof raw.pendingProjectSave === "object" ? clone(raw.pendingProjectSave) : null;
     state.transactions = Array.isArray(raw.transactions) ? clone(raw.transactions.slice(-TRANSACTION_LIMIT)) : [];

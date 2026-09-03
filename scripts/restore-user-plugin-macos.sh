@@ -11,7 +11,7 @@ while [[ $# -gt 0 ]]; do
     *) echo "未知参数：$1" >&2; exit 2;;
   esac
 done
-[[ -n "$BACKUP_PATH" && -d "$BACKUP_PATH" ]] || { echo "请提供可恢复的插件备份目录。" >&2; exit 1; }
+[[ -n "$BACKUP_PATH" && -d "$BACKUP_PATH" && ! -L "$BACKUP_PATH" ]] || { echo "备份路径必须是存在的普通目录，不能是符号链接。" >&2; exit 1; }
 if /usr/bin/pgrep -if "Adobe Premiere Pro" >/dev/null 2>&1; then
   echo "Premiere Pro 正在运行。请先保存工程并正常关闭 Premiere，再恢复插件。" >&2
   exit 1

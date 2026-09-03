@@ -18,6 +18,24 @@
     return value == null ? "" : String(value);
   }
 
+  function runtimePlatformName(override) {
+    var explicit = text(override).trim().toLocaleLowerCase("en-US");
+    if (explicit) return explicit;
+    try {
+      if (typeof process !== "undefined" && process && typeof process.platform === "string") {
+        return process.platform.toLocaleLowerCase("en-US");
+      }
+    } catch (processError) {}
+    try {
+      if (typeof navigator !== "undefined" && navigator) {
+        var hint = [navigator.platform, navigator.userAgent].map(text).join(" ");
+        if (/windows|win32|win64/i.test(hint)) return "win32";
+        if (/macintosh|macintel|mac os|darwin/i.test(hint)) return "darwin";
+      }
+    } catch (navigatorError) {}
+    return "";
+  }
+
   function readErrorField(error, field) {
     try {
       return error && error[field] != null ? String(error[field]) : "";
@@ -65,16 +83,25 @@
       || /(?:文件|路径)不存在/.test(description);
   }
 
-  function toFileSystemPath(nativePath) {
+  function isForwardSlashUncPath(nativePath, platform) {
+    // //host/share 与 POSIX 双斜杠路径在语法上不可区分，只有明确的 Windows 运行时才转换。
+    if (runtimePlatformName(platform) !== "win32") return false;
+    var value = text(nativePath).trim();
+    return /^\/\/[^\\/]+[\\/]+[^\\/]+(?:[\\/]|$)/.test(value);
+  }
+
+  function toFileSystemPath(nativePath, platform) {
     var value = text(nativePath);
     if (/^\\\\\?\\UNC\\/i.test(value)) return "\\\\" + value.slice(8);
     if (/^\\\\\?\\[A-Za-z]:[\\/]/.test(value)) return value.slice(4);
+    if (isForwardSlashUncPath(value, platform)) return "\\\\" + value.slice(2).replace(/\//g, WINDOWS_SEPARATOR);
     return value;
   }
 
-  function isWindowsPath(nativePath) {
+  function isWindowsPath(nativePath, platform) {
     var value = text(nativePath).trim();
     return /^(?:[A-Za-z]:[\\/]|\\\\)/.test(value)
+      || isForwardSlashUncPath(value, platform)
       || /^\\\\\?\\(?:UNC\\|[A-Za-z]:[\\/])/i.test(value);
   }
 
@@ -82,11 +109,17 @@
     return isWindowsPath(nativePath) ? "\\" : "/";
   }
 
-  function trimTrailingSeparators(nativePath) {
-    var value = toFileSystemPath(nativePath);
-    if (/^[A-Za-z]:[\\/]$/.test(value)) return value.charAt(0).toUpperCase() + ":\\";
-    if (/^\\\\[^\\]+\\[^\\]+\\?$/.test(value)) return value.replace(/[\\/]+$/, "");
-    if (value === "/") return value;
+  function trimTrailingSeparators(nativePath, platform) {
+    var value = toFileSystemPath(nativePath, platform);
+    if (/^[A-Za-z]:[\\/]+$/.test(value)) return value.charAt(0).toUpperCase() + ":\\";
+    if (/^\/+$/.test(value)) return "/";
+    if (value.slice(0, 2) === WINDOWS_SEPARATOR + WINDOWS_SEPARATOR) {
+      var uncRoot = value.replace(/[\\/]+$/, "");
+      var uncRootParts = uncRoot.slice(2).split(/[\\/]+/);
+      if (uncRootParts.length === 2 && uncRootParts[0] && uncRootParts[1]) {
+        return WINDOWS_SEPARATOR + WINDOWS_SEPARATOR + uncRootParts.join(WINDOWS_SEPARATOR);
+      }
+    }
     return value.replace(/[\\/]+$/, "");
   }
 
@@ -96,9 +129,65 @@
     return value.toLocaleLowerCase("en-US");
   }
 
-  function normalizePathForComparison(nativePath) {
-    var value = trimTrailingSeparators(toFileSystemPath(nativePath).trim());
-    if (isWindowsPath(value)) {
+  function lexicalNormalizePath(nativePath, platform) {
+    var value = toFileSystemPath(nativePath, platform).trim();
+    var windows = isWindowsPath(value, platform);
+    if (windows) {
+      value = value.replace(/\//g, WINDOWS_SEPARATOR);
+      if (value.slice(0, 2) === WINDOWS_SEPARATOR + WINDOWS_SEPARATOR) {
+        value = WINDOWS_SEPARATOR + WINDOWS_SEPARATOR + value.slice(2).replace(/\\+/g, WINDOWS_SEPARATOR);
+      } else {
+        value = value.replace(/\\+/g, WINDOWS_SEPARATOR);
+      }
+    } else {
+      value = value.replace(/\/+/g, "/");
+    }
+    value = trimTrailingSeparators(value, platform);
+    var separator = windows ? WINDOWS_SEPARATOR : "/";
+    var absolute = false;
+    var prefix = "";
+    var rootCount = 0;
+    if (windows) {
+      var drive = value.match(/^([A-Za-z]:)(?:\\|$)/);
+      var unc = value.match(/^\\\\([^\\]+)\\([^\\]+)(?:\\|$)/);
+      if (drive) {
+        absolute = true;
+        prefix = drive[1].toUpperCase() + WINDOWS_SEPARATOR;
+        value = value.slice(drive[0].length);
+      } else if (unc) {
+        absolute = true;
+        prefix = WINDOWS_SEPARATOR + WINDOWS_SEPARATOR;
+        value = value.slice(2);
+        rootCount = 2;
+      }
+    } else if (value.charAt(0) === "/") {
+      absolute = true;
+      prefix = "/";
+      value = value.slice(1);
+    }
+    var parts = value.split(separator);
+    var stack = windows && rootCount ? value.split(separator).slice(0, rootCount) : [];
+    if (windows && rootCount) {
+      value = parts.slice(rootCount).join(separator);
+      parts = value ? value.split(separator) : [];
+    }
+    parts.forEach(function (part) {
+      if (!part || part === ".") return;
+      if (part === "..") {
+        if (stack.length > rootCount && stack[stack.length - 1] !== "..") stack.pop();
+        else if (!absolute) stack.push(part);
+        return;
+      }
+      stack.push(part);
+    });
+    var body = stack.join(separator);
+    if (absolute) return prefix + body;
+    return body;
+  }
+
+  function normalizePathForComparison(nativePath, platform) {
+    var value = lexicalNormalizePath(nativePath, platform);
+    if (isWindowsPath(value, platform)) {
       value = value.replace(/\//g, WINDOWS_SEPARATOR);
       if (/^[A-Za-z]:/.test(value)) value = value.charAt(0).toUpperCase() + value.slice(1);
       return value.toLocaleLowerCase("en-US");
@@ -106,12 +195,13 @@
     return value.replace(/\/+/g, "/");
   }
 
-  function samePath(left, right) {
-    return normalizePathForComparison(left) === normalizePathForComparison(right);
+  function samePath(left, right, platform) {
+    return normalizePathForComparison(left, platform) === normalizePathForComparison(right, platform);
   }
 
   function normalizeRelativePathForComparison(relativePath) {
-    var value = text(relativePath).trim().replace(/[\\/]+/g, "/");
+    var input = text(relativePath).trim().replace(/[\\/]+/g, "/");
+    var value = lexicalNormalizePath(input).replace(/[\\/]+/g, "/");
     return value.replace(/^\.\//, "").replace(/\/+$/, "");
   }
 
@@ -125,8 +215,8 @@
     return normalizedLeft.toLocaleLowerCase("en-US") === normalizedRight.toLocaleLowerCase("en-US");
   }
 
-  function isAbsoluteLocalPath(nativePath) {
-    return /^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+(?:[\\/]|$)|\/)/.test(toFileSystemPath(nativePath).trim());
+  function isAbsoluteLocalPath(nativePath, platform) {
+    return /^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+(?:[\\/]|$)|\/)/.test(toFileSystemPath(nativePath, platform).trim());
   }
 
   function dirname(nativePath) {
@@ -176,11 +266,11 @@
     return separator === "/" && joined.indexOf("//") === 0 ? joined.slice(1) : joined;
   }
 
-  function isPathInside(candidate, rootPath) {
-    var candidateKey = normalizePathForComparison(candidate);
-    var rootKey = normalizePathForComparison(rootPath);
+  function isPathInside(candidate, rootPath, platform) {
+    var candidateKey = normalizePathForComparison(candidate, platform);
+    var rootKey = normalizePathForComparison(rootPath, platform);
     if (!candidateKey || !rootKey) return false;
-    var separator = isWindowsPath(rootPath) ? WINDOWS_SEPARATOR : "/";
+    var separator = isWindowsPath(rootPath, platform) ? WINDOWS_SEPARATOR : "/";
     var prefix = rootKey.charAt(rootKey.length - 1) === separator
       ? rootKey
       : rootKey + separator;
@@ -209,9 +299,9 @@
     return padBatchIndex(safeIndex) + "_" + (safeIndex === 1 ? "初始素材" : localDateStamp(date));
   }
 
-  function isSameVolume(left, right) {
-    var leftPath = toFileSystemPath(left);
-    var rightPath = toFileSystemPath(right);
+  function isSameVolume(left, right, platform) {
+    var leftPath = toFileSystemPath(left, platform);
+    var rightPath = toFileSystemPath(right, platform);
     var leftMatch = leftPath.match(/^([A-Za-z]):[\\/]/);
     var rightMatch = rightPath.match(/^([A-Za-z]):[\\/]/);
     if (leftMatch && rightMatch) return leftMatch[1].toLocaleLowerCase("en-US") === rightMatch[1].toLocaleLowerCase("en-US");
