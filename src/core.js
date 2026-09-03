@@ -18,35 +18,122 @@
     return value == null ? "" : String(value);
   }
 
+  function readErrorField(error, field) {
+    try {
+      return error && error[field] != null ? String(error[field]) : "";
+    } catch (readError) {
+      return "";
+    }
+  }
+
+  function isMissingPathError(error) {
+    var structured = ["code", "name", "errno"].map(function (field) {
+      return readErrorField(error, field).trim().toUpperCase();
+    });
+    var numericFields = [readErrorField(error, "code"), readErrorField(error, "errno")];
+    if (typeof error === "number" || (typeof error === "string" && /^-?\d+$/.test(error.trim()))) {
+      numericFields.push(String(error));
+    }
+    var knownNonMissingNumbers = [
+      5, 13, -13, 16, -16, 20, -20, 21, -21, 22, -22, 26, -26, 28, -28, 30, -30, 32, 33,
+      -4092, -4082, -4071, -4070, -4068, -4055, -4052, -4048, -4047, -4027,
+    ];
+    if (numericFields.some(function (value) {
+      var number = Number(value);
+      return Number.isFinite(number) && knownNonMissingNumbers.indexOf(number) >= 0;
+    })) return false;
+
+    var parts = structured.concat([readErrorField(error, "message")]);
+    try { parts.push(error == null ? "" : String(error)); } catch (stringError) {}
+    var description = parts.join("\n").toUpperCase();
+    var knownNonMissingPattern = /(?:^|[^A-Z0-9])(?:EACCES|EPERM|EBUSY|EIO|EROFS|ENOTDIR|EISDIR|EINVAL|ENOSPC|ETXTBSY|EEXIST|ENOTEMPTY|ELOOP|ENAMETOOLONG|EMFILE|ENFILE|EDQUOT|EXDEV|ACCESS[_ -]*DENIED|PERMISSION[_ -]*DENIED|SHARING[_ -]*VIOLATION|LOCK[_ -]*VIOLATION)(?:$|[^A-Z0-9])/;
+    if (knownNonMissingPattern.test(description)) return false;
+
+    var knownMissing = ["ENOENT", "FILE_NOT_FOUND", "PATH_NOT_FOUND", "FILENOTFOUND", "PATHNOTFOUND", "FILENOTFOUNDERROR", "PATHNOTFOUNDERROR", "NOTFOUNDERROR"];
+    if (structured.some(function (value) { return knownMissing.indexOf(value) >= 0; })) return true;
+
+    if (numericFields.some(function (value) {
+      var number = Number(value);
+      return Number.isFinite(number) && [2, 3, -2, -4058].indexOf(number) >= 0;
+    })) return true;
+    return /(?:^|[^A-Z0-9])ENOENT(?:$|[^A-Z0-9])/.test(description)
+      || /(?:^|[^A-Z0-9])(?:FILE|PATH)(?:[_ -]+WAS)?[_ -]+NOT[_ -]+FOUND(?:$|[^A-Z0-9])/.test(description)
+      || /NO SUCH FILE OR DIRECTORY/.test(description)
+      || /(?:^|[^A-Z0-9])(?:FILE|PATH) DOES NOT EXIST(?:$|[^A-Z0-9])/.test(description)
+      || /(?:THE SYSTEM )?(?:CANNOT|COULD NOT) FIND (?:THE )?(?:FILE|PATH)(?: SPECIFIED)?/.test(description)
+      || /系统找不到指定的(?:文件|路径)/.test(description)
+      || /(?:文件|路径)不存在/.test(description);
+  }
+
+  function toFileSystemPath(nativePath) {
+    var value = text(nativePath);
+    if (/^\\\\\?\\UNC\\/i.test(value)) return "\\\\" + value.slice(8);
+    if (/^\\\\\?\\[A-Za-z]:[\\/]/.test(value)) return value.slice(4);
+    return value;
+  }
+
+  function isWindowsPath(nativePath) {
+    var value = text(nativePath).trim();
+    return /^(?:[A-Za-z]:[\\/]|\\\\)/.test(value)
+      || /^\\\\\?\\(?:UNC\\|[A-Za-z]:[\\/])/i.test(value);
+  }
+
   function separatorFor(nativePath) {
-    return text(nativePath).indexOf("\\") >= 0 ? "\\" : "/";
+    return isWindowsPath(nativePath) ? "\\" : "/";
   }
 
   function trimTrailingSeparators(nativePath) {
-    var value = text(nativePath);
+    var value = toFileSystemPath(nativePath);
     if (/^[A-Za-z]:[\\/]$/.test(value)) return value.charAt(0).toUpperCase() + ":\\";
     if (/^\\\\[^\\]+\\[^\\]+\\?$/.test(value)) return value.replace(/[\\/]+$/, "");
+    if (value === "/") return value;
     return value.replace(/[\\/]+$/, "");
   }
 
-  function normalizePathForComparison(nativePath) {
-    var value = trimTrailingSeparators(text(nativePath).trim()).replace(/\//g, WINDOWS_SEPARATOR);
+  function legacyNormalizePathForComparison(nativePath) {
+    var value = trimTrailingSeparators(toFileSystemPath(nativePath).trim()).replace(/\//g, WINDOWS_SEPARATOR);
     if (/^[A-Za-z]:/.test(value)) value = value.charAt(0).toUpperCase() + value.slice(1);
     return value.toLocaleLowerCase("en-US");
+  }
+
+  function normalizePathForComparison(nativePath) {
+    var value = trimTrailingSeparators(toFileSystemPath(nativePath).trim());
+    if (isWindowsPath(value)) {
+      value = value.replace(/\//g, WINDOWS_SEPARATOR);
+      if (/^[A-Za-z]:/.test(value)) value = value.charAt(0).toUpperCase() + value.slice(1);
+      return value.toLocaleLowerCase("en-US");
+    }
+    return value.replace(/\/+/g, "/");
   }
 
   function samePath(left, right) {
     return normalizePathForComparison(left) === normalizePathForComparison(right);
   }
 
+  function normalizeRelativePathForComparison(relativePath) {
+    var value = text(relativePath).trim().replace(/[\\/]+/g, "/");
+    return value.replace(/^\.\//, "").replace(/\/+$/, "");
+  }
+
+  function sameRelativePath(left, right) {
+    var normalizedLeft = normalizeRelativePathForComparison(left);
+    var normalizedRight = normalizeRelativePathForComparison(right);
+    if (normalizedLeft === normalizedRight) return true;
+    // 0.1.0/0.1.1 在 Windows 状态中使用小写反斜杠键；
+    // 只对携带旧 Windows 分隔符的相对路径启用兼容比较，保持 macOS 大小写敏感。
+    if (text(left).indexOf("\\") < 0 && text(right).indexOf("\\") < 0) return false;
+    return normalizedLeft.toLocaleLowerCase("en-US") === normalizedRight.toLocaleLowerCase("en-US");
+  }
+
   function isAbsoluteLocalPath(nativePath) {
-    return /^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+(?:[\\/]|$)|\/)/.test(text(nativePath).trim());
+    return /^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+(?:[\\/]|$)|\/)/.test(toFileSystemPath(nativePath).trim());
   }
 
   function dirname(nativePath) {
     var value = trimTrailingSeparators(nativePath);
     var index = Math.max(value.lastIndexOf("\\"), value.lastIndexOf("/"));
     if (index < 0) return "";
+    if (index === 0 && value.charAt(0) === "/") return "/";
     if (index === 2 && /^[A-Za-z]:/.test(value)) return value.slice(0, 3).replace("/", "\\");
     return value.slice(0, index);
   }
@@ -75,20 +162,29 @@
     });
     if (!parts.length) return "";
     var separator = separatorFor(parts[0]);
-    return parts
+    var joined = parts
       .map(function (part, index) {
-        var value = text(part);
-        if (index === 0) return value.replace(/[\\/]+$/, "");
+        var value = index === 0 ? toFileSystemPath(part) : text(part);
+        if (index === 0) {
+          if (value === "/") return value;
+          if (/^[A-Za-z]:[\\/]$/.test(value)) return value.charAt(0).toUpperCase() + ":\\";
+          return value.replace(/[\\/]+$/, "");
+        }
         return value.replace(/^[\\/]+|[\\/]+$/g, "");
       })
       .join(separator);
+    return separator === "/" && joined.indexOf("//") === 0 ? joined.slice(1) : joined;
   }
 
   function isPathInside(candidate, rootPath) {
     var candidateKey = normalizePathForComparison(candidate);
     var rootKey = normalizePathForComparison(rootPath);
     if (!candidateKey || !rootKey) return false;
-    return candidateKey === rootKey || candidateKey.indexOf(rootKey + WINDOWS_SEPARATOR) === 0;
+    var separator = isWindowsPath(rootPath) ? WINDOWS_SEPARATOR : "/";
+    var prefix = rootKey.charAt(rootKey.length - 1) === separator
+      ? rootKey
+      : rootKey + separator;
+    return candidateKey === rootKey || candidateKey.indexOf(prefix) === 0;
   }
 
   function workspaceRootForProject(projectPath) {
@@ -114,12 +210,15 @@
   }
 
   function isSameVolume(left, right) {
-    var leftMatch = text(left).match(/^([A-Za-z]):[\\/]/);
-    var rightMatch = text(right).match(/^([A-Za-z]):[\\/]/);
+    var leftPath = toFileSystemPath(left);
+    var rightPath = toFileSystemPath(right);
+    var leftMatch = leftPath.match(/^([A-Za-z]):[\\/]/);
+    var rightMatch = rightPath.match(/^([A-Za-z]):[\\/]/);
     if (leftMatch && rightMatch) return leftMatch[1].toLocaleLowerCase("en-US") === rightMatch[1].toLocaleLowerCase("en-US");
-    var leftUnc = text(left).match(/^\\\\([^\\]+)\\([^\\]+)/);
-    var rightUnc = text(right).match(/^\\\\([^\\]+)\\([^\\]+)/);
-    return Boolean(leftUnc && rightUnc && leftUnc[0].toLocaleLowerCase("en-US") === rightUnc[0].toLocaleLowerCase("en-US"));
+    var leftUnc = leftPath.match(/^\\\\([^\\]+)\\([^\\]+)/);
+    var rightUnc = rightPath.match(/^\\\\([^\\]+)\\([^\\]+)/);
+    if (leftUnc && rightUnc) return leftUnc[0].toLocaleLowerCase("en-US") === rightUnc[0].toLocaleLowerCase("en-US");
+    return false;
   }
 
   function isProjectFile(nativePath) {
@@ -191,6 +290,9 @@
     classifyMediaPath: classifyMediaPath,
     dirname: dirname,
     extname: extname,
+    isMissingPathError: isMissingPathError,
+    isWindowsPath: isWindowsPath,
+    legacyNormalizePathForComparison: legacyNormalizePathForComparison,
     isPathInside: isPathInside,
     isAbsoluteLocalPath: isAbsoluteLocalPath,
     isPotentialImageSequence: isPotentialImageSequence,
@@ -203,8 +305,11 @@
     makeMediaSpaceId: makeMediaSpaceId,
     normalizePathForComparison: normalizePathForComparison,
     samePath: samePath,
+    sameRelativePath: sameRelativePath,
+    normalizeRelativePathForComparison: normalizeRelativePathForComparison,
     stem: stem,
     targetNameCandidate: targetNameCandidate,
+    toFileSystemPath: toFileSystemPath,
     workspaceRootForProject: workspaceRootForProject,
   };
 });

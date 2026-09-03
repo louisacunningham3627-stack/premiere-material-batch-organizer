@@ -55,3 +55,43 @@ test("未保存工程没有路径时，工程身份会安全回退", () => {
   );
   assert.equal(Premiere.projectIdentity({ name: "Untitled" }), "name:Untitled");
 });
+
+test("Premiere 工程路径在适配器边界转换为普通 Windows 路径", async () => {
+  const project = {
+    guid: { toString: () => "extended-project" },
+    name: "测试工程.prproj",
+    path: "\\\\?\\E:\\剪辑项目\\测试工程.prproj",
+  };
+  const context = await Premiere.activeContext({ Project: { getActiveProject: async () => project } });
+
+  assert.equal(context.projectPath, "E:\\剪辑项目\\测试工程.prproj");
+  assert.equal(context.workspaceRoot, "E:\\剪辑项目");
+  assert.match(context.identity, /^path:e:\\剪辑项目\\测试工程\.prproj/);
+});
+
+test("Premiere 素材路径在清单边界转换并合并同一文件", async () => {
+  const extendedClip = {
+    name: "采访.wav",
+    getId: () => "clip-extended",
+    isSequence: async () => false,
+    getMediaFilePath: async () => "\\\\?\\E:\\素材库\\采访.wav",
+  };
+  const ordinaryClip = {
+    name: "采访副本.wav",
+    getId: () => "clip-ordinary",
+    isSequence: async () => false,
+    getMediaFilePath: async () => "E:\\素材库\\采访.wav",
+  };
+  const ppro = {
+    FolderItem: { cast: () => null },
+    ClipProjectItem: { cast: (item) => item },
+  };
+  const inventory = await Premiere.inventoryProject(ppro, {
+    getRootItem: async () => ({ getItems: async () => [extendedClip, ordinaryClip] }),
+  });
+  const groups = Premiere.groupByMediaPath(inventory.entries);
+
+  assert.equal(inventory.entries[0].mediaPath, "E:\\素材库\\采访.wav");
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].entries.length, 2);
+});

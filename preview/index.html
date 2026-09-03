@@ -7,7 +7,7 @@
   <style>
     :root { color-scheme: dark; font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif; background: #0d0f10; color: #eef0f1; }
     * { box-sizing: border-box; }
-    body { min-width: 320px; margin: 0; padding: 22px; background: #0d0f10; }
+    body { min-width: 0; margin: 0; padding: 22px; background: #0d0f10; }
     header { display: flex; align-items: end; justify-content: space-between; gap: 18px; max-width: 960px; margin: 0 auto 18px; }
     h1 { margin: 0; font-size: 18px; font-weight: 650; }
     p { margin: 4px 0 0; color: #a5abb0; font-size: 12px; }
@@ -15,14 +15,16 @@
     a { padding: 6px 8px; border: 1px solid #34383c; border-radius: 3px; color: #b9bec2; background: #17191b; font-size: 12px; text-decoration: none; }
     a:hover, a[aria-current="page"] { border-color: #e3a63a; color: #f4c76d; }
     .stage { display: flex; align-items: flex-start; justify-content: center; min-height: 700px; max-width: 960px; margin: 0 auto; padding: 18px; border: 1px solid rgba(255,255,255,.09); background: #111315; }
-    iframe { width: 300px; min-width: 280px; height: 650px; border: 1px solid #34383c; box-shadow: 0 4px 18px rgba(0,0,0,.3); }
+    iframe { width: 300px; min-width: 0; max-width: 100%; height: 650px; border: 1px solid #34383c; box-shadow: 0 4px 18px rgba(0,0,0,.3); }
     @media (max-width: 620px) { body { padding: 12px; } header { display: block; } .state-links { justify-content: start; margin-top: 12px; } .stage { min-height: 670px; padding: 0; } iframe { width: 100%; height: 650px; } }
   </style>
 </head>
 <body>
   <header>
-    <div><h1>素材自动整理 · 面板预览</h1><p>切换状态，检查 300px 的真实面板布局。</p></div>
+    <div><h1>素材自动整理 · 面板预览</h1><p>先检查首次设置，再查看日常整理状态。</p></div>
     <nav class="state-links" aria-label="预览状态">
+      <a href="?state=setup" data-state="setup">首次设置</a>
+      <a href="?state=activate" data-state="activate">等待开启</a>
       <a href="?state=ready" data-state="ready">已开启</a>
       <a href="?state=empty" data-state="empty">未打开工程</a>
       <a href="?state=unsaved" data-state="unsaved">未保存工程</a>
@@ -34,14 +36,20 @@
       <a href="?state=conflict" data-state="conflict">需要确认</a>
       <a href="?state=failure" data-state="failure">需要恢复</a>
       <a href="?state=savefailed" data-state="savefailed">补链待保存</a>
+      <a href="?state=setup&amp;view=settings&amp;settings=empty" data-view="settings">不搬动文件夹</a>
     </nav>
   </header>
   <section class="stage"><iframe id="panelFrame" title="素材自动整理面板"></iframe></section>
   <script>
     const params = new URLSearchParams(location.search);
-    const state = params.get('state') || 'ready';
-    document.getElementById('panelFrame').src = `../plugin/index.html?preview=1&state=${encodeURIComponent(state)}`;
-    document.querySelector(`[data-state="${CSS.escape(state)}"]`)?.setAttribute('aria-current', 'page');
+    const state = params.get('state') || 'setup';
+    const view = params.get('view') || '';
+    const settings = params.get('settings') || 'mixed';
+    document.getElementById('panelFrame').src = `../plugin/index.html?preview=1&state=${encodeURIComponent(state)}&view=${encodeURIComponent(view)}&settings=${encodeURIComponent(settings)}`;
+    const active = view === 'settings'
+      ? document.querySelector('[data-view="settings"]')
+      : document.querySelector(`[data-state="${CSS.escape(state)}"]`);
+    active?.setAttribute('aria-current', 'page');
   </script>
 </body>
 </html>

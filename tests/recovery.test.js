@@ -313,3 +313,36 @@ test("恢复流程要求中断组内的每个项目都具有身份信息", async
     assert.match(result.reason, /完整的素材项身份/);
   });
 });
+
+test("macOS 恢复路径比较保留大小写，不会误认大小写不同的源文件", async () => {
+  const sourcePath = "/Users/Editor/项目/录音/Voice.WAV";
+  const targetPath = "/Users/Editor/项目/素材/001_初始素材/Voice.WAV";
+  const stat = { size: 4, mtimeMs: 1000, ctimeMs: 1000, birthtimeMs: 1000, dev: 9, ino: 12 };
+  const fakeFs = {
+    lstat: async (nativePath) => {
+      if (nativePath === sourcePath) return stat;
+      const error = new Error("no such file or directory");
+      error.code = "ENOENT";
+      throw error;
+    },
+  };
+  const result = await Recovery.inspectPending({
+    fs: fakeFs,
+    pending: {
+      id: "mac-recovery",
+      sourcePath,
+      targetRelativePath: "素材\\001_初始素材\\Voice.WAV",
+      sourceFingerprint: stat,
+      byteCount: 4,
+      mode: "copy",
+      itemCount: 1,
+      itemIds: ["item-1"],
+    },
+    targetPath,
+    mediaRoot: "/Users/Editor/项目/素材",
+    linkedEntries: [{ itemId: "item-1", mediaPath: "/Users/Editor/项目/录音/voice.wav" }],
+  });
+  assert.equal(result.kind, "manual");
+  assert.equal(result.sourceLinkCount, 0);
+  assert.match(result.reason, /原工程|素材项/);
+});

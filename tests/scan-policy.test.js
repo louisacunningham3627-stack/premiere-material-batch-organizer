@@ -135,3 +135,57 @@ test("旧版保护素材库 ID 不能静默共用同一本地文件夹", async (
   assert.deepEqual(result.unresolved.map((library) => library.libraryId), ["library-b"]);
   assert.match(result.unresolved[0].reason, /另一个不搬动素材库/);
 });
+
+test("工程文件夹、盘符根目录和素材目录祖先不能成为不搬动范围", async () => {
+  let statCalls = 0;
+  const fakeFs = {
+    async lstat() {
+      statCalls += 1;
+      return { isDirectory: () => true };
+    },
+  };
+  const libraries = [
+    { libraryId: "workspace", label: "工程目录" },
+    { libraryId: "drive", label: "整个磁盘" },
+    { libraryId: "media-parent", label: "素材目录祖先" },
+  ];
+  const mappings = [
+    { libraryId: "workspace", rootPath: "E:\\Project" },
+    { libraryId: "drive", rootPath: "E:\\" },
+    { libraryId: "media-parent", rootPath: "F:\\Collected" },
+  ];
+
+  const result = await ScanPolicy.validateProtectedMappings(fakeFs, libraries, mappings, {
+    workspaceRoot: "E:\\Project",
+    mediaRoot: "F:\\Collected\\素材",
+  });
+
+  assert.equal(result.validMappings.length, 0);
+  assert.deepEqual(result.unresolved.map((library) => library.libraryId), ["workspace", "drive", "media-parent"]);
+  assert.equal(statCalls, 0);
+});
+
+test("父子重叠的不搬动文件夹不会同时生效", async () => {
+  const fakeFs = {
+    async lstat() {
+      return { isDirectory: () => true };
+    },
+  };
+  const libraries = [
+    { libraryId: "post-kit", label: "后期包" },
+    { libraryId: "sfx", label: "后期包音效" },
+  ];
+  const mappings = [
+    { libraryId: "post-kit", rootPath: "D:\\Libraries\\PostKit" },
+    { libraryId: "sfx", rootPath: "D:\\Libraries\\PostKit\\SFX" },
+  ];
+
+  const result = await ScanPolicy.validateProtectedMappings(fakeFs, libraries, mappings, {
+    workspaceRoot: "E:\\Project",
+    mediaRoot: "E:\\Project\\素材",
+  });
+
+  assert.deepEqual(result.validMappings.map((mapping) => mapping.libraryId), ["post-kit"]);
+  assert.deepEqual(result.unresolved.map((library) => library.libraryId), ["sfx"]);
+  assert.match(result.unresolved[0].reason, /范围重叠/);
+});

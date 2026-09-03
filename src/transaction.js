@@ -20,19 +20,36 @@
     return value === undefined || value === null || value === 0;
   }
 
-  function isMissingPathError(error) {
-    var code = String(error && error.code || "").toUpperCase();
-    return code === "ENOENT" || code === "PATH_NOT_FOUND" || code === "FILE_NOT_FOUND";
-  }
-
   async function exists(fs, nativePath) {
     try {
       await fs.lstat(nativePath);
       return true;
     } catch (error) {
-      if (isMissingPathError(error)) return false;
+      if (Core.isMissingPathError(error)) return false;
       throw error;
     }
+  }
+
+  // 只有文件与已创建目标目录的 lstat.dev 都存在且相同，才证明可以走同卷移动。
+  // UXP 或某些文件系统可能不提供 dev；此时必须保守地走复制事务。
+  async function resolveMoveMode(fs, sourcePath, targetDirectory) {
+    var sourceStat;
+    var targetStat;
+    try {
+      sourceStat = await fs.lstat(sourcePath);
+      targetStat = await fs.lstat(targetDirectory);
+    } catch (error) {
+      return { mode: "copy", proven: false, reason: "无法读取源文件或目标目录卷标识" };
+    }
+    var sourceDev = Number(sourceStat && sourceStat.dev);
+    var targetDev = Number(targetStat && targetStat.dev);
+    if (!Number.isFinite(sourceDev) || !Number.isFinite(targetDev) || sourceDev <= 0 || targetDev <= 0) {
+      return { mode: "copy", proven: false, reason: "文件系统未提供可验证的卷标识", sourceDev: sourceDev || 0, targetDev: targetDev || 0 };
+    }
+    if (sourceDev !== targetDev) {
+      return { mode: "copy", proven: true, reason: "源文件与目标目录不在同一卷", sourceDev: sourceDev, targetDev: targetDev };
+    }
+    return { mode: "rename", proven: true, reason: "源文件与目标目录确认同卷", sourceDev: sourceDev, targetDev: targetDev };
   }
 
   async function assertContext(validate) {
@@ -387,7 +404,7 @@
     var cleanupPath = options.cleanupPath || cleanupPathFor(sourcePath, options.id);
     var context = {
       changedItems: [],
-      mode: options.forceMode || (Core.isSameVolume(sourcePath, targetPath) ? "rename" : "copy"),
+      mode: options.forceMode || "copy",
       stagingPath: stagingPath,
       cleanupPath: cleanupPath,
       stagingCreated: false,
@@ -397,6 +414,7 @@
       targetMethod: "",
       sourceMovedToTarget: false,
       sourceFingerprint: null,
+      modeEvidence: options.modeEvidence || null,
     };
 
     if (Core.isProjectFile(sourcePath) || Core.isProjectFile(targetPath)) {
@@ -426,6 +444,11 @@
       if (await exists(fs, cleanupPath)) throw new Error("发现未完成的源文件清理，请先检查");
 
       var originalStat = await fs.lstat(sourcePath);
+      if (!options.forceMode) {
+        var resolvedMode = await resolveMoveMode(fs, sourcePath, Core.dirname(targetPath));
+        context.mode = resolvedMode.mode;
+        context.modeEvidence = resolvedMode;
+      }
       var byteCount = statSize(originalStat);
       var sourceFingerprint = fingerprintFromStat(originalStat);
       var cleanupFingerprint = sourceFingerprint;
@@ -552,6 +575,7 @@
         sourceFingerprint: sourceFingerprint,
         targetFingerprint: actualTargetFingerprint,
         mode: context.mode,
+        modeEvidence: context.modeEvidence || null,
         sourceRetained: false,
         sourceChanged: sourceChanged,
         cleanupPending: cleanupPending,
@@ -609,5 +633,6 @@
     statSize: statSize,
     verifyFileCopy: verifyFileCopy,
     waitForVerifiedLink: waitForVerifiedLink,
+    resolveMoveMode: resolveMoveMode,
   };
 });

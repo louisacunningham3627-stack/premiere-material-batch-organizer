@@ -76,6 +76,26 @@
     return value && typeof value === "object" && !Array.isArray(value) ? clone(value) : {};
   }
 
+  function canonicalKey(key, value) {
+    var candidate = value && (value.path || value.sourcePath) || key;
+    return Core.normalizePathForComparison(candidate);
+  }
+
+  function mergeKeyedValue(target, key, value) {
+    if (!key) return;
+    if (target[key] == null) {
+      target[key] = value;
+      return;
+    }
+    if (Array.isArray(target[key])) {
+      target[key] = target[key].concat(Array.isArray(value) ? value : [value]);
+    } else if (Array.isArray(value)) {
+      target[key] = [target[key]].concat(value);
+    } else if (JSON.stringify(target[key]) !== JSON.stringify(value)) {
+      target[key] = [target[key], value];
+    }
+  }
+
   function isRecord(value) {
     return Boolean(value && typeof value === "object" && !Array.isArray(value));
   }
@@ -149,15 +169,34 @@
         })
       : [];
     state.projects = objectOrEmpty(raw.projects);
-    state.knownMedia = objectOrEmpty(raw.knownMedia);
+    state.knownMedia = {};
+    Object.keys(objectOrEmpty(raw.knownMedia)).forEach(function (sourceKey) {
+      var value = clone(raw.knownMedia[sourceKey]);
+      state.knownMedia[canonicalKey(sourceKey, value)] = value;
+    });
     state.pathMappings = {};
     Object.keys(objectOrEmpty(raw.pathMappings)).forEach(function (sourceKey) {
       var rawMappings = Array.isArray(raw.pathMappings[sourceKey]) ? raw.pathMappings[sourceKey] : [raw.pathMappings[sourceKey]];
       var safeMappings = rawMappings.filter(function (mapping) {
         return mapping && typeof mapping === "object" && Core.isSafeRelativePath(mapping.targetRelativePath);
       }).map(function (mapping) { return clone(mapping); });
-      if (safeMappings.length) state.pathMappings[sourceKey] = safeMappings;
+      if (safeMappings.length) {
+        var canonicalSourceKey = canonicalKey(sourceKey, safeMappings[0]);
+        mergeKeyedValue(state.pathMappings, canonicalSourceKey, safeMappings);
+      }
     });
+    state.projects = Object.keys(state.projects).reduce(function (projects, projectKey) {
+      var project = projects[projectKey];
+      if (project && project.baselineMedia && typeof project.baselineMedia === "object") {
+        var migratedBaseline = {};
+        Object.keys(project.baselineMedia).forEach(function (sourceKey) {
+          var entry = project.baselineMedia[sourceKey];
+          migratedBaseline[canonicalKey(sourceKey, entry)] = entry;
+        });
+        project.baselineMedia = migratedBaseline;
+      }
+      return projects;
+    }, state.projects);
     state.pendingTransaction = raw.pendingTransaction && typeof raw.pendingTransaction === "object" ? clone(raw.pendingTransaction) : null;
     state.pendingProjectSave = raw.pendingProjectSave && typeof raw.pendingProjectSave === "object" ? clone(raw.pendingProjectSave) : null;
     state.transactions = Array.isArray(raw.transactions) ? clone(raw.transactions.slice(-TRANSACTION_LIMIT)) : [];
@@ -355,7 +394,7 @@
       var sameProject = (!previousTransaction.projectPath || !repeatedProjectPath || Core.samePath(previousTransaction.projectPath, repeatedProjectPath))
         && (!previousTransaction.projectIdentity || !repeatedProjectIdentity || previousTransaction.projectIdentity === repeatedProjectIdentity);
       var sameTransaction = Core.samePath(previousTransaction.sourcePath, repeatedSourcePath)
-        && Core.normalizePathForComparison(previousTransaction.targetRelativePath) === Core.normalizePathForComparison(repeatedTargetPath)
+        && Core.sameRelativePath(previousTransaction.targetRelativePath, repeatedTargetPath)
         && previousTransaction.batchIndex === repeatedBatchIndex
         && sameProject;
       if (sameTransaction) {
@@ -378,6 +417,7 @@
       byteCount: Math.max(0, Number(result.byteCount || pending.byteCount) || 0),
       batchIndex: Math.max(1, Math.floor(Number(result.batchIndex || pending.batchIndex) || next.currentBatchIndex)),
       mode: String(result.mode || pending.mode || ""),
+      modeEvidence: clone(result.modeEvidence || pending.modeEvidence || {}),
       projectPath: String(result.projectPath || pending.projectPath || ""),
       projectIdentity: String(result.projectIdentity || pending.projectIdentity || ""),
       sourceRetained: false,
@@ -528,12 +568,12 @@
   function updateMappingTargetFingerprint(state, sourcePath, targetRelativePath, targetFingerprint, at) {
     var next = clone(state);
     var sourceKey = Core.normalizePathForComparison(sourcePath);
-    var expectedTarget = Core.normalizePathForComparison(targetRelativePath);
+    var expectedTarget = String(targetRelativePath || "");
     var mappings = Array.isArray(next.pathMappings[sourceKey])
       ? next.pathMappings[sourceKey]
       : next.pathMappings[sourceKey] ? [next.pathMappings[sourceKey]] : [];
     mappings.forEach(function (mapping) {
-      if (Core.normalizePathForComparison(mapping.targetRelativePath) === expectedTarget) {
+      if (Core.sameRelativePath(mapping.targetRelativePath, expectedTarget)) {
         mapping.targetFingerprint = clone(targetFingerprint || {});
       }
     });

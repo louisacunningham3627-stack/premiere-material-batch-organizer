@@ -66,6 +66,13 @@ test("工程重新加载失败后仍可重试，轮询会处理异步拒绝", ()
   assert.match(source, /function requestScan\(options\)[\s\S]*operationQueue\.run[\s\S]*\.catch\(function \(error\)/);
 });
 
+test("运行时统一使用兼容 UXP 的缺失路径判断", () => {
+  assert.match(source, /Core\.isMissingPathError\(error\)/);
+  assert.doesNotMatch(source, /function isMissingPathError\(/);
+  assert.match(source, /工程路径已识别/);
+  assert.doesNotMatch(source, /工程已保存/);
+});
+
 test("同一保护文件夹不能重新映射到第二个素材库 ID", () => {
   assert.match(source, /samePathMapping && samePathMapping\.libraryId !== libraryId/);
   assert.match(source, /这个目录已经在不搬动列表中/);

@@ -1,4 +1,6 @@
 dist/
+dist-macos/
+work/
 node_modules/
 *.log
 *.tmp

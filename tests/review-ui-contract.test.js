@@ -43,8 +43,8 @@ test("预览会展示被动等待写入状态", () => {
   assert.match(html, /waiting: \{ title: '正在等待文件写完'/);
   assert.match(html, /文件仍在下载或写入，会保持在原位置；写完后自动重试/);
   assert.match(html, /kind: 'waiting', action: '', intent: '', icon: 'file', auto: true/);
-  assert.match(html, /const locked = \['empty', 'unsaved', 'running', 'waiting', 'moving', 'conflict', 'failure', 'savefailed'\]/);
-  assert.match(html, /openBatchButton'\)\.disabled = \['empty', 'unsaved', 'running', 'moving'\]/);
+  assert.match(html, /const locked = \['setup', 'activate', 'empty', 'unsaved', 'running', 'waiting', 'moving', 'conflict', 'failure', 'savefailed'\]/);
+  assert.match(html, /openBatchButton'\)\.disabled = \['setup', 'activate', 'empty', 'unsaved', 'running', 'moving'\]/);
 });
 
 test("预览会展示因等待 Premiere 保存而阻断的恢复状态", () => {

@@ -84,13 +84,53 @@ test("整理操作必须移动文件，因此拒绝保留源文件", async () =>
 
 test("路径检查只会把确认缺失的文件视为不存在", async () => {
   const missingError = Object.assign(new Error("missing"), { code: "ENOENT" });
+  const uxpMissingError = new Error("no such file or directory");
   const deniedError = Object.assign(new Error("access denied"), { code: "EACCES" });
 
   assert.equal(await Transaction.exists({ lstat: async () => { throw missingError; } }, "C:\\missing.mov"), false);
+  assert.equal(await Transaction.exists({ lstat: async () => { throw uxpMissingError; } }, "C:\\uxp-missing.mov"), false);
   await assert.rejects(
     Transaction.exists({ lstat: async () => { throw deniedError; } }, "C:\\locked.mov"),
     (error) => error === deniedError,
   );
+});
+
+test("运行时只有源文件与已创建目标目录 dev 相等才使用同卷模式", async () => {
+  const stats = {
+    "/Volumes/素材盘/source.wav": { dev: 17 },
+    "/Volumes/素材盘/项目/素材/001_初始素材": { dev: 17 },
+    "/Volumes/外置盘/项目/素材/001_初始素材": { dev: 22 },
+  };
+  const fakeFs = {
+    lstat: async (nativePath) => {
+      if (stats[nativePath]) return stats[nativePath];
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    },
+  };
+  assert.equal((await Transaction.resolveMoveMode(fakeFs, "/Volumes/素材盘/source.wav", "/Volumes/素材盘/项目/素材/001_初始素材")).mode, "rename");
+  assert.equal((await Transaction.resolveMoveMode(fakeFs, "/Volumes/素材盘/source.wav", "/Volumes/外置盘/项目/素材/001_初始素材")).mode, "copy");
+  assert.equal((await Transaction.resolveMoveMode(fakeFs, "/Volumes/素材盘/missing.wav", "/Volumes/素材盘/项目/素材/001_初始素材")).mode, "copy");
+});
+
+test("未指定模式时事务使用已读取的源文件和目标目录卷证据", async () => {
+  await withTempFolder(async (folder) => {
+    const source = path.join(folder, "source.mov");
+    const target = path.join(folder, "batch", "source.mov");
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.writeFile(source, "same-volume");
+    const result = await Transaction.moveAndRelink({
+      fs,
+      sourcePath: source,
+      targetPath: target,
+      projectItems: [fakeProjectItem(source)],
+      validate: async () => true,
+      persistProject: async () => true,
+      wait: async () => {},
+    });
+    assert.equal(result.mode, "rename");
+    assert.equal(result.modeEvidence.proven, true);
+    assert.equal(result.modeEvidence.sourceDev, result.modeEvidence.targetDev);
+  });
 });
 
 test("源文件删除失败时保持 cleanup-pending，而不会报告成功", async () => {

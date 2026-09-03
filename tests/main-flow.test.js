@@ -29,6 +29,226 @@ function createDocument(resolveElement) {
   };
 }
 
+function createSettingsGuardHarness() {
+  function testElement() {
+    const listeners = new Map();
+    return {
+      dataset: {},
+      disabled: false,
+      hidden: false,
+      textContent: "",
+      addEventListener(name, listener) { listeners.set(name, listener); },
+      listeners,
+    };
+  }
+
+  const addButton = testElement();
+  const settingsMessage = testElement();
+  const settingsBlockReason = testElement();
+  const settingsSaveStatus = testElement();
+  const settingsButton = testElement();
+  const textOnly = { textContent: "" };
+  const elements = new Map([
+    ["addProtectedButton", addButton],
+    ["settingsMessage", settingsMessage],
+    ["settingsBlockReason", settingsBlockReason],
+    ["settingsSaveStatus", settingsSaveStatus],
+    ["settingsButton", settingsButton],
+    ["settingsWorkspaceName", { ...textOnly }],
+    ["settingsWorkspacePath", { ...textOnly }],
+  ]);
+  const document = createDocument((id) => elements.get(id) || null);
+  const entrypoints = {};
+  let pickerCalls = 0;
+  const window = {
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  const localStorage = {
+    getItem() { return null; },
+    setItem() {},
+  };
+  const uxp = {
+    entrypoints: {
+      setup(config) { Object.assign(entrypoints, config.panels.materialBatchOrganizer); },
+    },
+    storage: {
+      localFileSystem: {
+        async getFolder() {
+          pickerCalls += 1;
+          return null;
+        },
+      },
+    },
+    shell: { async openPath() {} },
+  };
+  const sandbox = {
+    console,
+    document,
+    window,
+    localStorage,
+    setTimeout,
+    clearTimeout,
+    setInterval,
+    clearInterval,
+    MaterialBatchCore: Core,
+    MaterialBatchState: State,
+    MaterialBatchTransaction: Transaction,
+    MaterialBatchRecovery: Recovery,
+    MaterialBatchCoordination: Coordination,
+    MaterialBatchPremiere: { async activeContext() { return null; } },
+    MaterialBatchStorage: { MISSING_REVISION: null },
+    MaterialBatchScanPolicy: ScanPolicy,
+    require(name) {
+      if (name === "uxp") return uxp;
+      if (name === "premierepro") return { Constants: {}, ProjectEvent: {}, EventManager: {} };
+      if (name === "fs") return {};
+      throw new Error(`unexpected require: ${name}`);
+    },
+  };
+  sandbox.globalThis = sandbox;
+  vm.runInNewContext(mainSource, sandbox, { filename: "src/main.js" });
+
+  return {
+    addButton,
+    entrypoints,
+    settingsBlockReason,
+    settingsMessage,
+    get pickerCalls() { return pickerCalls; },
+  };
+}
+
+function createProtectedFolderHarness(folderError, localSettingsError) {
+  function testElement() {
+    const listeners = new Map();
+    return {
+      dataset: {},
+      disabled: false,
+      hidden: false,
+      textContent: "",
+      addEventListener(name, listener) { listeners.set(name, listener); },
+      listeners,
+    };
+  }
+
+  const addButton = testElement();
+  const finishButton = testElement();
+  const settingsMessage = testElement();
+  const settingsBlockReason = testElement();
+  const settingsSaveStatus = testElement();
+  const stateAction = testElement();
+  const elements = new Map([
+    ["addProtectedButton", addButton],
+    ["finishProtectionButton", finishButton],
+    ["settingsMessage", settingsMessage],
+    ["settingsBlockReason", settingsBlockReason],
+    ["settingsSaveStatus", settingsSaveStatus],
+    ["settingsWorkspaceName", testElement()],
+    ["settingsWorkspacePath", testElement()],
+    ["stateAction", stateAction],
+  ]);
+  const document = createDocument((id) => elements.get(id) || null);
+  const entrypoints = {};
+  const windowListeners = new Map();
+  const context = {
+    project: { path: "E:\\项目\\测试工程.prproj", name: "测试工程.prproj" },
+    projectPath: "E:\\项目\\测试工程.prproj",
+    projectName: "测试工程.prproj",
+    identity: "path:e:\\项目\\测试工程.prproj",
+    workspaceRoot: "E:\\项目",
+  };
+  const selectedFolder = { nativePath: "\\\\?\\E:\\共享库\\后期包", name: "后期包" };
+  const lstatPaths = [];
+  let latestState = null;
+  const fsMock = {
+    async lstat(nativePath) {
+      lstatPaths.push(nativePath);
+      if (String(nativePath).startsWith("\\\\?\\")) {
+        const error = new Error("no such file or directory");
+        error.code = "ENOENT";
+        throw error;
+      }
+      if (folderError) throw folderError;
+      return { isDirectory: () => true, isFile: () => false };
+    },
+  };
+  const storage = {
+    MISSING_REVISION: null,
+    statePath(root) { return `${root}\\.premiere-material-space.json`; },
+    async readJsonWithBackup() { return { missing: true, recovered: false, revision: null }; },
+    async writeJsonAtomic(_fs, _path, value) {
+      latestState = JSON.parse(JSON.stringify(value));
+      return { revision: "saved" };
+    },
+  };
+  const localStorage = {
+    values: new Map(),
+    setCalls: 0,
+    getItem(key) { return this.values.has(key) ? this.values.get(key) : null; },
+    setItem(key, value) {
+      this.setCalls += 1;
+      if (localSettingsError && this.setCalls === 2) throw localSettingsError;
+      this.values.set(key, String(value));
+    },
+  };
+  const window = {
+    addEventListener(name, listener) { windowListeners.set(name, listener); },
+    removeEventListener() {},
+    listeners: windowListeners,
+  };
+  const uxp = {
+    entrypoints: {
+      setup(config) { Object.assign(entrypoints, config.panels.materialBatchOrganizer); },
+    },
+    storage: { localFileSystem: { async getFolder() { return selectedFolder; } } },
+    shell: { async openPath() {} },
+  };
+  const sandbox = {
+    console,
+    document,
+    window,
+    localStorage,
+    setTimeout,
+    clearTimeout,
+    setInterval,
+    clearInterval,
+    MaterialBatchCore: Core,
+    MaterialBatchState: State,
+    MaterialBatchTransaction: Transaction,
+    MaterialBatchRecovery: Recovery,
+    MaterialBatchCoordination: Coordination,
+    MaterialBatchPremiere: {
+      async activeContext() { return context; },
+      async inventoryProject() { return { entries: [], warnings: [] }; },
+      assertCompleteInventory() {},
+      groupByMediaPath() { return []; },
+      async contextStillActive() { return true; },
+    },
+    MaterialBatchStorage: storage,
+    MaterialBatchScanPolicy: ScanPolicy,
+    require(name) {
+      if (name === "uxp") return uxp;
+      if (name === "premierepro") return { Constants: {}, ProjectEvent: {}, EventManager: {} };
+      if (name === "fs") return fsMock;
+      throw new Error(`unexpected require: ${name}`);
+    },
+  };
+  sandbox.globalThis = sandbox;
+  vm.runInNewContext(mainSource, sandbox, { filename: "src/main.js" });
+
+  return {
+    addButton,
+    document,
+    entrypoints,
+    finishButton,
+    lstatPaths,
+    localStorage,
+    settingsMessage,
+    stateAction,
+    get latestState() { return latestState; },
+  };
+}
+
 function createHarness() {
   const document = createDocument();
   const windowListeners = new Map();
@@ -248,7 +468,14 @@ function createMappingHarness() {
     },
   };
   const localStorage = {
-    values: new Map(),
+    values: new Map([[
+      "hechao.material-batch-organizer.machine.v1",
+      JSON.stringify({
+        autoByMediaSpace: {},
+        protectedSetupByMediaSpace: { [state.mediaSpaceId]: true },
+        protectedMappings: [],
+      }),
+    ]]),
     getItem(key) { return this.values.has(key) ? this.values.get(key) : null; },
     setItem(key, value) { this.values.set(key, String(value)); },
   };
@@ -467,7 +694,7 @@ async function settle() {
   await new Promise((resolve) => setImmediate(resolve));
 }
 
-test("刷新失败后可通过已绑定的刷新事件重试，且不会出现未处理的异步拒绝", async () => {
+test("刷新失败后可重试，并在首次保护设置前保持不扫描", async () => {
   const harness = createHarness();
   const unhandled = [];
   const onUnhandled = (reason) => unhandled.push(reason);
@@ -486,13 +713,100 @@ test("刷新失败后可通过已绑定的刷新事件重试，且不会出现�
     await settle();
 
     assert.equal(harness.readCount, 2, "状态读取失败后会重试");
-    assert.equal(harness.inventoryCount, 1, "重试会继续执行真实工程扫描");
+    assert.equal(harness.inventoryCount, 0, "确认不搬动文件夹之前不会扫描工程素材");
     assert.deepEqual(unhandled, []);
-    assert.equal(harness.document.body.dataset.state, "paused");
+    assert.equal(harness.document.body.dataset.state, "setup");
+    assert.equal(harness.document.body.dataset.onboarding, "protection");
   } finally {
     process.removeListener("unhandledRejection", onUnhandled);
     harness.entrypoints.hide();
   }
+});
+
+test("没有已保存工程时设置页会解释原因，且不会打开目录选择器", async () => {
+  const harness = createSettingsGuardHarness();
+  await harness.entrypoints.show();
+
+  assert.equal(harness.addButton.disabled, true);
+  assert.equal(harness.settingsBlockReason.hidden, false);
+  assert.match(harness.settingsBlockReason.textContent, /请先打开并保存 Premiere 工程/);
+
+  const click = harness.addButton.listeners.get("click");
+  assert.equal(typeof click, "function");
+  click();
+  await settle();
+
+  assert.equal(harness.pickerCalls, 0);
+  assert.equal(harness.settingsMessage.hidden, false);
+  assert.equal(harness.settingsMessage.dataset.kind, "error");
+  assert.match(harness.settingsMessage.textContent, /请先打开并保存 Premiere 工程/);
+});
+
+test("添加不搬动文件夹时会先转换 UXP 扩展路径", async () => {
+  const harness = createProtectedFolderHarness();
+  await harness.entrypoints.show();
+
+  harness.addButton.listeners.get("click")();
+  await settle();
+
+  assert.ok(harness.lstatPaths.length >= 1);
+  assert.ok(harness.lstatPaths.every((nativePath) => nativePath === "E:\\共享库\\后期包"));
+  const settings = JSON.parse(harness.localStorage.values.get("hechao.material-batch-organizer.machine.v1"));
+  assert.equal(settings.protectedMappings[0].rootPath, "E:\\共享库\\后期包");
+  assert.equal(harness.latestState.protectedLibraries[0].label, "后期包");
+  assert.match(harness.settingsMessage.textContent, /已添加“后期包”/);
+  assert.doesNotMatch(harness.settingsMessage.textContent, /no such file|directory/i);
+});
+
+test("首次确认不搬动名单后才进入开启自动整理步骤", async () => {
+  const harness = createProtectedFolderHarness();
+  await harness.entrypoints.show();
+
+  assert.equal(harness.document.body.dataset.onboarding, "protection");
+  assert.equal(harness.stateAction.textContent, "设置不搬动文件夹");
+  harness.finishButton.listeners.get("click")();
+  await settle();
+
+  assert.equal(harness.document.body.dataset.onboarding, "auto");
+  assert.equal(harness.stateAction.textContent, "开启自动整理");
+  assert.ok(harness.latestState && harness.latestState.mediaSpaceId, "空名单确认也会先保存素材空间");
+  const settings = JSON.parse(harness.localStorage.values.get("hechao.material-batch-organizer.machine.v1"));
+  assert.equal(Object.values(settings.protectedSetupByMediaSpace).every(Boolean), true);
+  assert.equal(Object.keys(settings.protectedSetupByMediaSpace).length, 1);
+  assert.equal(settings.protectedSetupByMediaSpace[harness.latestState.mediaSpaceId], true);
+});
+
+test("文件夹缺失和权限错误只显示中文", async () => {
+  const missing = Object.assign(new Error("ENOENT: no such file or directory, lstat 'E:\\共享库\\后期包'"), { code: "ENOENT" });
+  const missingHarness = createProtectedFolderHarness(missing);
+  await missingHarness.entrypoints.show();
+  missingHarness.addButton.listeners.get("click")();
+  await settle();
+  assert.match(missingHarness.settingsMessage.textContent, /找不到所选文件夹/);
+  assert.doesNotMatch(missingHarness.settingsMessage.textContent, /no such file|directory/i);
+
+  const denied = Object.assign(new Error("permission denied"), { code: "EACCES" });
+  const deniedHarness = createProtectedFolderHarness(denied);
+  await deniedHarness.entrypoints.show();
+  deniedHarness.addButton.listeners.get("click")();
+  await settle();
+  assert.match(deniedHarness.settingsMessage.textContent, /没有权限读取所选文件夹/);
+  assert.doesNotMatch(deniedHarness.settingsMessage.textContent, /permission|denied/i);
+});
+
+test("本机设置保存失败时不会误认为不搬动名单已确认", async () => {
+  const saveError = new Error("quota exceeded");
+  const harness = createProtectedFolderHarness(null, saveError);
+  await harness.entrypoints.show();
+
+  harness.finishButton.listeners.get("click")();
+  await settle();
+
+  assert.equal(harness.document.body.dataset.onboarding, "protection");
+  assert.equal(harness.stateAction.textContent, "设置不搬动文件夹");
+  assert.equal(harness.settingsMessage.dataset.kind, "error");
+  assert.match(harness.settingsMessage.textContent, /无法保存本机设置/);
+  assert.doesNotMatch(harness.settingsMessage.textContent, /quota|exceeded/i);
 });
 
 test("历史重链接失败后会保持等待，直到恢复操作成功保存 Premiere 工程", async () => {

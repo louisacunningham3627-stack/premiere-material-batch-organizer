@@ -12,7 +12,7 @@
 
   function readProjectPath(project) {
     try {
-      return String(project && project.path || "").trim();
+      return Core.toFileSystemPath(String(project && project.path || "").trim());
     } catch (error) {
       return "";
     }
@@ -90,14 +90,14 @@
         if (!clip) continue;
         try {
           if (await clip.isSequence()) continue;
-          var mediaPath = await clip.getMediaFilePath();
+          var mediaPath = Core.toFileSystemPath(await clip.getMediaFilePath());
           if (!mediaPath) continue;
           entries.push({
             item: item,
             clip: clip,
             itemId: itemId,
             itemName: String(item.name || clip.name || Core.basename(mediaPath)),
-            mediaPath: String(mediaPath),
+            mediaPath: mediaPath,
           });
         } catch (error) {
           warnings.push("跳过无法读取路径的素材 " + String(item.name || "") + ": " + (error.message || error));

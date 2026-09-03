@@ -87,7 +87,9 @@
         reason = "这台电脑还没有选择对应文件夹";
       } else if (!Core.isAbsoluteLocalPath(mapping.rootPath)) {
         reason = "保存的文件夹路径不是有效的绝对路径";
-      } else if (config.mediaRoot && Core.isPathInside(mapping.rootPath, config.mediaRoot)) {
+      } else if (config.workspaceRoot && Core.isPathInside(config.workspaceRoot, mapping.rootPath)) {
+        reason = "不能把工程文件夹或它的上级目录设为不搬动文件夹";
+      } else if (config.mediaRoot && (Core.isPathInside(mapping.rootPath, config.mediaRoot) || Core.isPathInside(config.mediaRoot, mapping.rootPath))) {
         reason = "不能把已经整理的素材目录设为不搬动文件夹";
       } else {
         try {
@@ -105,7 +107,12 @@
         if (claimedBy && claimedBy !== libraryId) {
           reason = "这个文件夹已经映射给另一个不搬动素材库";
         } else {
-          claimedRootByKey[rootKey] = libraryId;
+          var overlaps = validMappings.some(function (candidate) {
+            return Core.isPathInside(mapping.rootPath, candidate.rootPath)
+              || Core.isPathInside(candidate.rootPath, mapping.rootPath);
+          });
+          if (overlaps) reason = "这个文件夹与另一个不搬动素材库的范围重叠";
+          else claimedRootByKey[rootKey] = libraryId;
         }
       }
 

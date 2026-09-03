@@ -44,11 +44,12 @@ test("提交事务会记录路径映射和批次总计", () => {
     byteCount: 1024,
     batchIndex: 1,
   }, now);
-  state = State.commitTransaction(state, { id: "tx-1", mode: "copy", byteCount: 1024 }, now);
+  state = State.commitTransaction(state, { id: "tx-1", mode: "copy", modeEvidence: { proven: false, reason: "测试" }, byteCount: 1024 }, now);
   assert.equal(state.pendingTransaction, null);
   assert.equal(state.pathMappings["c:\\downloads\\new.mp4"][0].targetRelativePath, "素材\\001_初始素材\\new.mp4");
   assert.equal(state.batches[0].fileCount, 1);
   assert.equal(state.batches[0].byteCount, 1024);
+  assert.equal(state.transactions[0].modeEvidence.proven, false);
 });
 
 test("旧路径被替换时会记录 sourceChanged，且不会声称源文件仍被保留", () => {
@@ -359,4 +360,31 @@ test("恢复状态时，即使路径变化也会保留保护素材库 ID", () =>
   const handedOff = State.hydrateState(state, "E:\\接手\\项目", now);
   assert.deepEqual(handedOff.protectedLibraries, [{ libraryId: "post-kit-v10", label: "后期包 v10" }]);
   assert.equal(State.currentBatchPath(handedOff, "E:\\接手\\项目"), "E:\\接手\\项目\\素材\\001_初始素材");
+});
+
+test("恢复旧 Windows 状态键时按素材真实路径迁移，且相对路径比较兼容旧反斜杠", () => {
+  const raw = State.createState("/Users/Editor/项目", now);
+  raw.knownMedia = {
+    "\\users\\editor\\downloads\\voice.wav": {
+      path: "/Users/Editor/Downloads/Voice.WAV",
+      status: "moved",
+    },
+  };
+  raw.pathMappings = {
+    "\\users\\editor\\downloads\\voice.wav": {
+      sourcePath: "/Users/Editor/Downloads/Voice.WAV",
+      targetRelativePath: "素材\\001_初始素材\\Voice.WAV",
+    },
+  };
+  const hydrated = State.hydrateState(raw, "/Users/Editor/项目", now);
+  assert.ok(hydrated.knownMedia["/Users/Editor/Downloads/Voice.WAV"]);
+  assert.ok(hydrated.pathMappings["/Users/Editor/Downloads/Voice.WAV"]);
+  let updated = State.updateMappingTargetFingerprint(
+    hydrated,
+    "/Users/Editor/Downloads/Voice.WAV",
+    "素材/001_初始素材/voice.wav",
+    { size: 4, mtimeMs: 10 },
+    now,
+  );
+  assert.equal(updated.pathMappings["/Users/Editor/Downloads/Voice.WAV"][0].targetFingerprint.mtimeMs, 10);
 });

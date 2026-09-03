@@ -34,11 +34,6 @@
     return String(error && error.code || "").toUpperCase();
   }
 
-  function isMissingError(error) {
-    var code = errorCode(error);
-    return code === "ENOENT" || code === "PATH_NOT_FOUND" || code === "FILE_NOT_FOUND";
-  }
-
   function isAlreadyExistsError(error) {
     var code = errorCode(error);
     return code === "EEXIST" || code === "FILE_EXISTS" || code === "ALREADY_EXISTS";
@@ -79,14 +74,14 @@
     try {
       text = await readText(fs, nativePath);
     } catch (error) {
-      if (isMissingError(error)) return { exists: false, text: "", revision: MISSING_REVISION };
+      if (Core.isMissingPathError(error)) return { exists: false, text: "", revision: MISSING_REVISION };
       throw error;
     }
     try {
       var stat = await fs.lstat(nativePath);
       return { exists: true, text: text, revision: revisionFor(text, stat) };
     } catch (error) {
-      if (isMissingError(error)) return { exists: false, text: "", revision: MISSING_REVISION };
+      if (Core.isMissingPathError(error)) return { exists: false, text: "", revision: MISSING_REVISION };
       throw error;
     }
   }
@@ -398,7 +393,7 @@
       try {
         assertFsSuccess(await fs.rename(lockPath, stalePath), "隔离已释放的状态写锁");
       } catch (error) {
-        if (isMissingError(error)) continue;
+        if (Core.isMissingPathError(error)) continue;
         throw storageError("MATERIAL_BATCH_STORAGE_LOCKED", "已释放的状态写锁暂时无法安全接管，未执行写入", {
           lockReason: "reclaim-failed",
           cause: error,
@@ -476,7 +471,7 @@
     } catch (error) {
       primary = { exists: true, text: "", revision: undefined, readError: error };
     }
-    if (primary.exists) {
+    if (primary.exists && !primary.readError) {
       try {
         var primaryValue = JSON.parse(primary.text);
         if (!validate || validate(primaryValue) !== false) {
@@ -495,7 +490,7 @@
     } catch (error) {
       backup = { exists: true, text: "", revision: undefined, readError: error };
     }
-    if (backup.exists) {
+    if (backup.exists && !backup.readError) {
       try {
         var backupValue = JSON.parse(backup.text);
         if (!validate || validate(backupValue) !== false) {

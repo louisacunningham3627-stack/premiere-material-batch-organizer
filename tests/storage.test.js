@@ -62,6 +62,45 @@ test("仅当状态文件和备份都不存在时才报告缺失", async () => {
   });
 });
 
+test("UXP 只在消息中报告文件不存在时仍按首次使用处理", async () => {
+  await withFolder(async (statePath) => {
+    const uxpMissingFs = new Proxy(fs, {
+      get(target, property) {
+        if (property !== "readFile") return target[property];
+        return async () => { throw new Error("no such file or directory"); };
+      },
+    });
+    const loaded = await Storage.readJsonWithBackup(uxpMissingFs, statePath);
+    assert.deepEqual(loaded, {
+      value: null,
+      recovered: false,
+      missing: true,
+      revision: Storage.MISSING_REVISION,
+    });
+  });
+});
+
+test("状态文件权限错误不会伪装成首次使用", async () => {
+  await withFolder(async (statePath) => {
+    const deniedFs = new Proxy(fs, {
+      get(target, property) {
+        if (property !== "readFile") return target[property];
+        return async () => {
+          const error = new Error("permission denied");
+          error.code = "EACCES";
+          throw error;
+        };
+      },
+    });
+    await assert.rejects(
+      Storage.readJsonWithBackup(deniedFs, statePath),
+      (error) => error.code === "MATERIAL_BATCH_STORAGE_CORRUPT"
+        && error.primaryError.code === "EACCES"
+        && error.backupError.code === "EACCES",
+    );
+  });
+});
+
 test("状态文件和备份都不可用时抛出明确的损坏错误", async () => {
   await withFolder(async (statePath) => {
     await fs.writeFile(statePath, "{broken", "utf8");
