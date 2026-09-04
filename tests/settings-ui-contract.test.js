@@ -10,10 +10,12 @@ const styles = fs.readFileSync(path.join(__dirname, "..", "plugin", "styles.css"
 
 test("设置是独立的不搬动文件夹管理页，不再伪装成保存表单", () => {
   assert.match(html, /<section class="settings-page" id="settingsPage"/);
-  assert.match(html, /id="closeSettingsButton"[\s\S]*?>[\s\S]*?返回/);
+  assert.match(html, /id="closeSettingsButton"[\s\S]*?>[\s\S]*?返回主页/);
   assert.match(html, /id="settingsSaveStatus">自动保存/);
   assert.match(html, /id="addProtectedButton"[\s\S]*?添加不搬动文件夹/);
   assert.match(html, /id="protectedList"/);
+  assert.match(html, /id="protectedListCount"/);
+  assert.match(html, /id="protectedPathOverview"/);
   assert.match(html, /id="settingsMessage" role="status" aria-live="polite"/);
   assert.doesNotMatch(html, /id="settingsDrawer"|id="drawerBackdrop"|id="protectedPathInput"|id="saveSettingsButton"/);
   assert.doesNotMatch(html, /<h3>整理方式<\/h3>|class="policy-row"/);
@@ -27,6 +29,8 @@ test("设置页明确当前共享范围、连接状态和每项操作", () => {
   assert.match(source, /mapAction\.textContent = status\.valid \? "更换位置" : "选择本机位置"/);
   assert.match(source, /removeAction\.textContent = "移除"/);
   assert.match(source, /path\.textContent = mapping\.rootPath/);
+  assert.match(source, /setText\("protectedListCount", libraries\.length \+ " 个"\)/);
+  assert.match(source, /overview\.textContent = libraries\.map/);
   assert.doesNotMatch(html, /data-(?:path|root-path|source-path|target-path)=/);
 });
 
@@ -52,7 +56,9 @@ test("名单确认会原子保存本机设置，并按失败阶段显示固定�
 test("添加范围拒绝工程上级目录、素材目录和父子重叠目录", () => {
   assert.match(source, /Core\.isPathInside\(context\.workspaceRoot, rootPath\)/);
   assert.match(source, /Core\.isPathInside\(rootPath, mediaRoot\(\)\).*Core\.isPathInside\(mediaRoot\(\), rootPath\)/);
-  assert.match(source, /这个文件夹与名单里的另一个文件夹范围重叠/);
+  assert.match(source, /MATERIAL_BATCH_PROTECTED_FOLDER_OVERLAP/);
+  assert.match(source, /已有路径：/);
+  assert.match(source, /本次选择：/);
 });
 
 test("预览提供设置页入口，返回只切换页面而不触发交接", () => {
@@ -61,6 +67,15 @@ test("预览提供设置页入口，返回只切换页面而不触发交接", ()
   assert.match(html, /qs\('panelRoot'\)\.hidden = false/);
   assert.match(html, /params\.get\('view'\) === 'settings'/);
   assert.doesNotMatch(html, /closeSettingsPage[\s\S]{0,180}batch-collector:handoff/);
+});
+
+test("预览切换名单状态时会同步数量和完整路径摘要", () => {
+  assert.match(html, /empty: \{ count: '0 个', overview: '' \}/);
+  assert.match(html, /connected: \{ count: '1 个', overview: '后期包\\nI:\\\\【后期包 ver10\.0】' \}/);
+  assert.match(html, /unresolved: \{ count: '1 个', overview: '共享音效库\\n这台电脑还没有选择位置' \}/);
+  assert.match(html, /qs\('protectedListCount'\)\.textContent = summary\.count/);
+  assert.match(html, /qs\('protectedPathOverview'\)\.textContent = summary\.overview/);
+  assert.match(html, /qs\('protectedPathOverview'\)\.hidden = !summary\.overview/);
 });
 
 test("首次使用先确认不搬动文件夹，再允许开启自动整理", () => {
@@ -80,6 +95,8 @@ test("小面板具有自己的纵向滚动区，关键设置动作排在路径�
   assert.match(styles, /\.panel\s*\{[^}]*height:\s*100vh;[^}]*overflow-y:\s*auto;/s);
   assert.match(styles, /\.settings-scroll\s*\{[^}]*overflow-y:\s*auto;/s);
   assert.ok(html.indexOf('id="addProtectedButton"') < html.indexOf('id="settingsWorkspacePath"'));
+  assert.match(styles, /\.settings-header\s*\{[^}]*flex:\s*0 0 46px;/s);
+  assert.match(styles, /\.settings-message\s*\{[^}]*white-space:\s*pre-wrap;/s);
 });
 
 test("UXP 页面不再使用无法稳定显示的 SVG use 引用", () => {

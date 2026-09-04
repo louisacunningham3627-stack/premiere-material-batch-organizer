@@ -131,6 +131,14 @@
     if (Core.isMissingPathError(error)) return "找不到所选文件夹，请确认磁盘已连接后重新选择。";
     var code = "";
     try { code = String(error && (error.code || error.name) || "").toUpperCase(); } catch (readError) {}
+    if (code === "MATERIAL_BATCH_PROTECTED_FOLDER_OVERLAP") {
+      var conflictingLabel = readErrorDetail(error, "conflictingLabel") || "已有文件夹";
+      var conflictingPath = readErrorDetail(error, "conflictingPath") || "路径无法读取";
+      var selectedPath = readErrorDetail(error, "selectedPath") || "路径无法读取";
+      return "与已添加的不搬动文件夹“" + conflictingLabel + "”范围重叠。\n"
+        + "已有路径：" + conflictingPath + "\n"
+        + "本次选择：" + selectedPath;
+    }
     var description = (code + " " + message).toUpperCase();
     if (/(?:EACCES|EPERM|ACCESS[_ -]*DENIED|PERMISSION[_ -]*DENIED)/.test(description)) {
       return "没有权限读取所选文件夹，请检查访问权限后重试。";
@@ -465,10 +473,21 @@
   }
 
   function renderProtectedLibraries() {
+    var libraries = projectState ? projectState.protectedLibraries : [];
+    setText("protectedListCount", libraries.length + " 个");
+    var overview = element("protectedPathOverview");
+    if (overview) {
+      overview.hidden = !libraries.length;
+      overview.textContent = libraries.map(function (library) {
+        var status = protectedMappingValidation.statusById[library.libraryId] || { mapping: null };
+        var mapping = status.mapping;
+        return library.label + "\n" + (mapping && mapping.rootPath ? mapping.rootPath : "这台电脑还没有选择位置");
+      }).join("\n\n");
+    }
+
     var list = element("protectedList");
     if (!list) return;
     while (list.firstChild) list.removeChild(list.firstChild);
-    var libraries = projectState ? projectState.protectedLibraries : [];
     if (!libraries.length) {
       var empty = document.createElement("li");
       empty.className = "protected-empty";
@@ -486,7 +505,7 @@
       var mapping = status.mapping;
       var row = document.createElement("li");
       row.className = "protected-item";
-      row.dataset.connectionState = status.valid ? "connected" : "unresolved";
+      row.setAttribute("data-connection-state", status.valid ? "connected" : "unresolved");
 
       var heading = document.createElement("div");
       heading.className = "protected-item-heading";
@@ -522,15 +541,15 @@
       var mapAction = document.createElement("button");
       mapAction.className = "button button-secondary";
       mapAction.type = "button";
-      mapAction.dataset.libraryId = library.libraryId;
-      mapAction.dataset.action = "map";
+      mapAction.setAttribute("data-library-id", library.libraryId);
+      mapAction.setAttribute("data-action", "map");
       mapAction.textContent = status.valid ? "更换位置" : "选择本机位置";
       mapAction.disabled = Boolean(protectedSettingsBlockReason());
       var removeAction = document.createElement("button");
       removeAction.className = "button button-quiet";
       removeAction.type = "button";
-      removeAction.dataset.libraryId = library.libraryId;
-      removeAction.dataset.action = "remove";
+      removeAction.setAttribute("data-library-id", library.libraryId);
+      removeAction.setAttribute("data-action", "remove");
       removeAction.textContent = "移除";
       removeAction.disabled = Boolean(protectedSettingsBlockReason());
       actions.appendChild(mapAction);
@@ -1816,6 +1835,16 @@
     throw new Error("无法为这个不搬动文件夹生成稳定编号");
   }
 
+  function protectedFolderOverlapError(selectedPath, library, mapping) {
+    var error = new Error("选择的文件夹与已有不搬动文件夹范围重叠");
+    error.name = "MaterialBatchProtectedFolderOverlapError";
+    error.code = "MATERIAL_BATCH_PROTECTED_FOLDER_OVERLAP";
+    error.conflictingLabel = String(library && library.label || mapping && mapping.label || "已有文件夹");
+    error.conflictingPath = Core.toFileSystemPath(mapping && mapping.rootPath || "");
+    error.selectedPath = Core.toFileSystemPath(selectedPath);
+    return error;
+  }
+
   async function validateChosenProtectedFolder(rootPath, existingLibraryId) {
     if (!Core.isAbsoluteLocalPath(rootPath)) throw new Error("没有取得有效的绝对目录路径");
     if (context && context.workspaceRoot && Core.isPathInside(context.workspaceRoot, rootPath)) {
@@ -1824,12 +1853,15 @@
     if (mediaRoot() && (Core.isPathInside(rootPath, mediaRoot()) || Core.isPathInside(mediaRoot(), rootPath))) {
       throw new Error("已经整理到“素材”里的文件不需要再设为不搬动");
     }
-    var overlaps = projectState && projectState.protectedLibraries.some(function (library) {
+    var overlap = null;
+    if (projectState) projectState.protectedLibraries.some(function (library) {
       if (library.libraryId === existingLibraryId) return false;
       var mapping = machineSettings.protectedMappings.find(function (candidate) { return candidate.libraryId === library.libraryId; });
-      return mapping && (Core.isPathInside(rootPath, mapping.rootPath) || Core.isPathInside(mapping.rootPath, rootPath));
+      if (!mapping || (!Core.isPathInside(rootPath, mapping.rootPath) && !Core.isPathInside(mapping.rootPath, rootPath))) return false;
+      overlap = { library: library, mapping: mapping };
+      return true;
     });
-    if (overlaps) throw new Error("这个文件夹与名单里的另一个文件夹范围重叠");
+    if (overlap) throw protectedFolderOverlapError(rootPath, overlap.library, overlap.mapping);
     var stat = await fs.lstat(rootPath);
     if (!stat || typeof stat.isDirectory !== "function" || !stat.isDirectory()) {
       throw new Error("选择的路径不是文件夹");
@@ -2130,8 +2162,10 @@
     if (protectedList) protectedList.addEventListener("click", function (event) {
       var button = event.target.closest ? event.target.closest("button[data-library-id]") : null;
       if (!button) return;
-      if (button.dataset.action === "map") chooseProtectedFolder(button.dataset.libraryId);
-      if (button.dataset.action === "remove") removeProtectedLibrary(button.dataset.libraryId);
+      var libraryId = button.getAttribute("data-library-id");
+      var action = button.getAttribute("data-action");
+      if (action === "map") chooseProtectedFolder(libraryId);
+      if (action === "remove") removeProtectedLibrary(libraryId);
     });
   }
 

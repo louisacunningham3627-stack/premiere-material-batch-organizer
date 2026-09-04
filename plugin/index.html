@@ -101,8 +101,8 @@
 
   <section class="settings-page" id="settingsPage" aria-labelledby="settingsHeading" aria-hidden="true" hidden>
     <header class="settings-header">
-      <button class="settings-back" id="closeSettingsButton" type="button" aria-label="返回素材自动整理">
-        <span class="settings-back-arrow" aria-hidden="true">←</span><span>返回</span>
+      <button class="settings-back" id="closeSettingsButton" type="button" aria-label="返回自动整理主页" title="返回自动整理主页">
+        <span class="settings-back-arrow" aria-hidden="true">←</span><span>返回主页</span>
       </button>
       <h2 id="settingsHeading">不搬动文件夹</h2>
       <span class="settings-save-status" id="settingsSaveStatus">自动保存</span>
@@ -117,6 +117,16 @@
         <span aria-hidden="true">＋</span><span>添加不搬动文件夹</span>
       </button>
       <p class="settings-block-reason" id="settingsBlockReason" hidden></p>
+
+      <div class="protected-list-heading">
+        <strong>当前不搬动文件夹</strong>
+        <span id="protectedListCount">2 个</span>
+      </div>
+      <code class="protected-path-overview" id="protectedPathOverview">【后期包 ver10.0】
+I:\【后期包 ver10.0】
+
+共享音效库
+这台电脑还没有选择位置</code>
 
       <ul class="protected-list" id="protectedList" aria-live="polite">
         <li class="protected-item" data-connection-state="connected">
@@ -224,15 +234,27 @@
         connected: '<li class="protected-item" data-connection-state="connected"><div class="protected-item-heading"><strong>后期包</strong><span class="protected-status">已连接</span></div><code class="protected-path">I:\\【后期包 ver10.0】</code><div class="protected-actions"><button class="button button-secondary" type="button" data-library-id="preview-post-kit" data-action="map">更换位置</button><button class="button button-quiet" type="button" data-library-id="preview-post-kit" data-action="remove">移除</button></div></li>',
         unresolved: '<li class="protected-item" data-connection-state="unresolved"><div class="protected-item-heading"><strong>共享音效库</strong><span class="protected-status">需要重新选择</span></div><p class="protected-reason">这台电脑还没有对应位置</p><p class="protected-detail">交接到这台电脑后，需要重新指定文件夹</p><div class="protected-actions"><button class="button button-secondary" type="button" data-library-id="preview-sfx" data-action="map">选择本机位置</button><button class="button button-quiet" type="button" data-library-id="preview-sfx" data-action="remove">移除</button></div></li>',
       };
+      const settingsPreviewSummary = {
+        empty: { count: '0 个', overview: '' },
+        connected: { count: '1 个', overview: '后期包\nI:\\【后期包 ver10.0】' },
+        unresolved: { count: '1 个', overview: '共享音效库\n这台电脑还没有选择位置' },
+        mixed: { count: '2 个', overview: '【后期包 ver10.0】\nI:\\【后期包 ver10.0】\n\n共享音效库\n这台电脑还没有选择位置' },
+      };
       const mixedSettingsMarkup = qs('protectedList').innerHTML;
       const setSettingsPreview = (name) => {
         const list = qs('protectedList');
         const message = qs('settingsMessage');
         const finish = qs('finishProtectionButton');
+        const summary = settingsPreviewSummary[name] || settingsPreviewSummary.mixed;
         list.innerHTML = settingsPreviewMarkup[name] || mixedSettingsMarkup;
+        qs('protectedListCount').textContent = summary.count;
+        qs('protectedPathOverview').textContent = summary.overview;
+        qs('protectedPathOverview').hidden = !summary.overview;
         message.hidden = name !== 'error';
         message.dataset.kind = 'error';
-        message.textContent = name === 'error' ? '添加失败：所选文件夹与名单里的另一个文件夹范围重叠。' : '';
+        message.textContent = name === 'error'
+          ? '添加失败：与已添加的不搬动文件夹“【后期包 ver10.0】”范围重叠。\n已有路径：I:\\【后期包 ver10.0】\n本次选择：I:\\【后期包 ver10.0】\\音效'
+          : '';
         const hasLibraries = name !== 'empty';
         const unresolved = name === 'unresolved' || name === 'mixed';
         finish.hidden = false;

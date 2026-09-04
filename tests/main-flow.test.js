@@ -118,7 +118,7 @@ function createSettingsGuardHarness() {
   };
 }
 
-function createProtectedFolderHarness(folderError, localSettingsError, stateWriteError) {
+function createProtectedFolderHarness(folderError, localSettingsError, stateWriteError, harnessOptions = {}) {
   function testElement() {
     const listeners = new Map();
     return {
@@ -137,6 +137,8 @@ function createProtectedFolderHarness(folderError, localSettingsError, stateWrit
   const settingsBlockReason = testElement();
   const settingsSaveStatus = testElement();
   const stateAction = testElement();
+  const protectedListCount = testElement();
+  const protectedPathOverview = testElement();
   const elements = new Map([
     ["addProtectedButton", addButton],
     ["finishProtectionButton", finishButton],
@@ -146,6 +148,8 @@ function createProtectedFolderHarness(folderError, localSettingsError, stateWrit
     ["settingsWorkspaceName", testElement()],
     ["settingsWorkspacePath", testElement()],
     ["stateAction", stateAction],
+    ["protectedListCount", protectedListCount],
+    ["protectedPathOverview", protectedPathOverview],
   ]);
   const document = createDocument((id) => elements.get(id) || null);
   const entrypoints = {};
@@ -157,9 +161,9 @@ function createProtectedFolderHarness(folderError, localSettingsError, stateWrit
     identity: "path:e:\\项目\\测试工程.prproj",
     workspaceRoot: "E:\\项目",
   };
-  const selectedFolder = { nativePath: "\\\\?\\E:\\共享库\\后期包", name: "后期包" };
+  const selectedFolder = harnessOptions.selectedFolder || { nativePath: "\\\\?\\E:\\共享库\\后期包", name: "后期包" };
   const lstatPaths = [];
-  let latestState = null;
+  let latestState = harnessOptions.initialState ? JSON.parse(JSON.stringify(harnessOptions.initialState)) : null;
   let stateWriteCalls = 0;
   const diagnostics = [];
   const fsMock = {
@@ -177,7 +181,11 @@ function createProtectedFolderHarness(folderError, localSettingsError, stateWrit
   const storage = {
     MISSING_REVISION: null,
     statePath(root) { return `${root}\\.premiere-material-space.json`; },
-    async readJsonWithBackup() { return { missing: true, recovered: false, revision: null }; },
+    async readJsonWithBackup() {
+      return harnessOptions.initialState
+        ? { value: JSON.parse(JSON.stringify(harnessOptions.initialState)), missing: false, recovered: false, revision: "initial" }
+        : { missing: true, recovered: false, revision: null };
+    },
     async writeJsonAtomic(_fs, _path, value) {
       stateWriteCalls += 1;
       if (stateWriteError && stateWriteCalls === 2) throw stateWriteError;
@@ -195,6 +203,12 @@ function createProtectedFolderHarness(folderError, localSettingsError, stateWrit
       this.values.set(key, String(value));
     },
   };
+  if (harnessOptions.initialMachineSettings) {
+    localStorage.values.set(
+      "hechao.material-batch-organizer.machine.v1",
+      JSON.stringify(harnessOptions.initialMachineSettings)
+    );
+  }
   const window = {
     addEventListener(name, listener) { windowListeners.set(name, listener); },
     removeEventListener() {},
@@ -252,6 +266,8 @@ function createProtectedFolderHarness(folderError, localSettingsError, stateWrit
     diagnostics,
     lstatPaths,
     localStorage,
+    protectedListCount,
+    protectedPathOverview,
     settingsMessage,
     stateAction,
     get latestState() { return latestState; },
@@ -766,6 +782,38 @@ test("添加不搬动文件夹时会先转换 UXP 扩展路径", async () => {
   assert.equal(harness.latestState.protectedLibraries[0].label, "后期包");
   assert.match(harness.settingsMessage.textContent, /已添加“后期包”/);
   assert.doesNotMatch(harness.settingsMessage.textContent, /no such file|directory/i);
+});
+
+test("选择重叠文件夹时会写出已有名单路径和本次选择路径", async () => {
+  const existingPath = "E:\\共享库\\后期包";
+  const selectedPath = "E:\\共享库\\后期包\\音效";
+  const libraryId = "library-existing-post-kit";
+  let initialState = State.createState("E:\\项目", new Date("2026-09-04T00:00:00.000Z"));
+  initialState = State.addProtectedLibrary(initialState, libraryId, "【后期包 ver10.0】", new Date("2026-09-04T00:00:01.000Z"));
+  const harness = createProtectedFolderHarness(null, null, null, {
+    initialState,
+    initialMachineSettings: {
+      autoByMediaSpace: {},
+      protectedSetupByMediaSpace: {},
+      protectedMappings: [{ libraryId, label: "【后期包 ver10.0】", rootPath: existingPath }],
+    },
+    selectedFolder: { nativePath: "\\\\?\\" + selectedPath, name: "音效" },
+  });
+  await harness.entrypoints.show();
+
+  assert.equal(harness.protectedListCount.textContent, "1 个");
+  assert.match(harness.protectedPathOverview.textContent, /【后期包 ver10\.0】/);
+  assert.match(harness.protectedPathOverview.textContent, /E:\\共享库\\后期包/);
+
+  harness.addButton.listeners.get("click")();
+  await settle();
+
+  assert.equal(harness.stateWriteCalls, 0, "重叠目录不会改写工程名单");
+  assert.equal(harness.settingsMessage.dataset.kind, "error");
+  assert.match(harness.settingsMessage.textContent, /【后期包 ver10\.0】/);
+  assert.match(harness.settingsMessage.textContent, /已有路径：E:\\共享库\\后期包/);
+  assert.match(harness.settingsMessage.textContent, /本次选择：E:\\共享库\\后期包\\音效/);
+  assert.equal(harness.lstatPaths.includes(selectedPath), false, "发现名单重叠后不会再访问本次选择路径");
 });
 
 test("首次确认不搬动名单后才进入开启自动整理步骤", async () => {
