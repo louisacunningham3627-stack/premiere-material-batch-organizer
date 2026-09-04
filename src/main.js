@@ -54,6 +54,8 @@
   var outsideMediaBytes = 0;
   var outsideUnreadableCount = 0;
   var protectedMappingValidation = { validMappings: [], unresolved: [], statusById: {} };
+  var recoverySnapshot = null;
+  var recoveryMessage = "";
 
   function element(id) {
     return document.getElementById(id);
@@ -202,7 +204,7 @@
     if (busy) return "素材正在整理，完成后才能修改名单。";
     if (!context || !context.projectPath || !projectState) return "请先打开并保存 Premiere 工程，才能设置这份名单。";
     if (stateReloadRequired || storageWarning) return "整理记录需要先恢复，暂时不能修改名单。";
-    if (projectState.pendingTransaction || projectState.pendingProjectSave) return "请先完成“检查上次整理”，再修改不搬动文件夹。";
+    if (projectState.pendingTransaction || projectState.pendingProjectSave) return "请先完成“检查文件和链接”，再修改不搬动文件夹。";
     return "";
   }
 
@@ -397,6 +399,19 @@
     setMachineSettings(values);
   }
 
+  function pauseAutomaticBestEffort() {
+    try {
+      setMachineSetting("auto", false);
+    } catch (settingsError) {
+      reportRuntimeError("暂停自动整理的本机设置保存失败", settingsError);
+    }
+    try {
+      stopMonitor(false);
+    } catch (monitorError) {
+      reportRuntimeError("停止自动整理监控失败", monitorError);
+    }
+  }
+
   function pauseWorkspaceProjectsInMemory() {
     if (!context || !context.workspaceRoot) return false;
     var changed = false;
@@ -471,7 +486,17 @@
 
   function relativeBatchPath() {
     if (!projectState) return "素材";
-    return Core.joinNativePath(projectState.mediaFolderName, State.currentBatch(projectState).name);
+    return relativePathForContext(projectState.mediaFolderName, State.currentBatch(projectState).name);
+  }
+
+  function relativePathForContext() {
+    var anchorPath = context && (context.workspaceRoot || context.projectPath) || "";
+    var separator = Core.isWindowsPath(anchorPath) ? "\\" : "/";
+    return Array.prototype.slice.call(arguments).filter(function (part) {
+      return String(part || "").length > 0;
+    }).map(function (part) {
+      return String(part).replace(/^[\\/]+|[\\/]+$/g, "");
+    }).join(separator);
   }
 
   function batchPath() {
@@ -480,6 +505,156 @@
 
   function mediaRoot() {
     return context && projectState ? Core.joinNativePath(context.workspaceRoot, projectState.mediaFolderName) : "";
+  }
+
+  function currentRecoveryRecord() {
+    if (!projectState) return null;
+    return projectState.pendingTransaction || projectState.pendingProjectSave || null;
+  }
+
+  function recoveryTargetPath(record) {
+    if (!record) return "";
+    var storedTarget = String(record.targetPath || "");
+    if (storedTarget && Core.isAbsoluteLocalPath(storedTarget) && Core.isPathInside(storedTarget, mediaRoot())) {
+      return storedTarget;
+    }
+    try { return targetPathForMapping(record); } catch (error) { return ""; }
+  }
+
+  function matchingRecoverySnapshot(record) {
+    return record && recoverySnapshot && String(recoverySnapshot.id || "") === String(record.id || "")
+      ? recoverySnapshot
+      : null;
+  }
+
+  function recoverySourcePath(record, snapshot) {
+    var cleanupPath = snapshot && snapshot.cleanupExists === true ? String(snapshot.cleanupPath || "") : "";
+    if (cleanupPath && Core.isAbsoluteLocalPath(cleanupPath)) return cleanupPath;
+    var sourcePath = String(record && record.sourcePath || "");
+    return Core.isAbsoluteLocalPath(sourcePath) ? sourcePath : "";
+  }
+
+  function canCloseLegacyRecoveryRecord(record, snapshot) {
+    if (!record || !snapshot || !projectState || record !== projectState.pendingTransaction) return false;
+    if (String(snapshot.id || "") !== String(record.id || "")
+      || snapshot.kind !== "manual"
+      || snapshot.manualCode !== "missing-target-checkpoint") return false;
+    if (snapshot.sourceExists !== true
+      || snapshot.targetExists !== true
+      || snapshot.stagingExists !== false
+      || snapshot.cleanupExists !== false
+      || snapshot.sourceChanged !== false
+      || snapshot.currentLinkState !== "source") return false;
+    if (Transaction.hasStrongFileIdentity(record.targetFingerprint)
+      || !Transaction.hasStrongFileIdentity(record.sourceFingerprint)
+      || !Transaction.hasStrongFileIdentity(snapshot.sourceFingerprint)
+      || !Transaction.hasStrongFileIdentity(snapshot.targetFingerprint)
+      || !Transaction.sameStrongPathFingerprint(record.sourceFingerprint, snapshot.sourceFingerprint)) return false;
+    var expectedBytes = Number(record.byteCount);
+    return Number.isFinite(expectedBytes)
+      && expectedBytes >= 0
+      && Number(snapshot.sourceSize) === expectedBytes
+      && Number(snapshot.targetSize) === expectedBytes;
+  }
+
+  function storedRecoveryError(record) {
+    var message = readErrorDetail(record, "error").trim();
+    return isSafeUserFacingMessage(message) ? message : "";
+  }
+
+  function legacyBatchFolderNameForTarget(targetPath) {
+    if (!targetPath) return "";
+    var folderName = Core.basename(Core.dirname(targetPath));
+    return /^\d{3}_/.test(String(folderName || "")) ? folderName : "";
+  }
+
+  function recoverySourceBlockReason(sourcePath) {
+    var classification = Core.classifyMediaPath(sourcePath, {
+      mediaRoot: mediaRoot(),
+      workspaceRoot: context && context.workspaceRoot,
+      protectedRoots: workspaceProtectedMappings(),
+    });
+    if (classification.kind === "collect") return "";
+    if (classification.kind === "managed") return "记录中的原位置属于当前工程文件夹，按当前规则必须保持原位；未继续旧事务。";
+    if (classification.kind === "protected") return "记录中的原位置属于“不搬动文件夹”，按当前规则必须保持原位；未继续旧事务。";
+    if (classification.kind === "ignored") return "记录中的文件是 Premiere 工程文件，绝不会移动、删除或补链。";
+    if (classification.kind === "review") return "记录中的素材现在需要人工处理，未继续旧事务。";
+    return "记录中的原位置无法按当前规则安全处理，未继续旧事务。";
+  }
+
+  function renderRecoveryDetails() {
+    var record = currentRecoveryRecord();
+    var details = element("recoveryDetails");
+    var locationActions = element("recoveryLocationActions");
+    var sourceOpenButton = element("openRecoverySourceButton");
+    var openButton = element("openRecoveryTargetButton");
+    var closeButton = element("closeRecoveryRecordButton");
+    var targetPath = recoveryTargetPath(record);
+    var snapshot = matchingRecoverySnapshot(record);
+    var sourcePath = recoverySourcePath(record, snapshot);
+    var canClose = canCloseLegacyRecoveryRecord(record, snapshot);
+    if (details) details.hidden = !record;
+    if (locationActions) locationActions.hidden = !record;
+    if (sourceOpenButton) {
+      sourceOpenButton.hidden = !record;
+      sourceOpenButton.disabled = !sourcePath || busy;
+    }
+    if (openButton) {
+      openButton.hidden = !record;
+      openButton.disabled = !targetPath || busy;
+    }
+    if (closeButton) {
+      closeButton.hidden = !canClose;
+      closeButton.disabled = !canClose || busy;
+    }
+    if (!record) return;
+
+    var recoveryBytes = snapshot && (snapshot.targetSize || snapshot.sourceSize)
+      || record.byteCount
+      || record.targetFingerprint && record.targetFingerprint.size
+      || 0;
+    setText("recoveryFilename", Core.basename(record.sourcePath || targetPath) || "待核对素材");
+    setText("recoverySize", formatBytes(recoveryBytes));
+    setText("recoverySourceLabel", snapshot && snapshot.cleanupExists === true ? "待处理原素材位置" : "原位置");
+    setText("recoverySourcePath", sourcePath || "记录中没有可用的原素材位置");
+    setText("recoveryTargetPath", targetPath || "记录中的新位置无效");
+    var sourceStatus = "等待核对";
+    if (snapshot) {
+      sourceStatus = snapshot.cleanupExists === true
+        ? "待清理文件存在 · " + formatBytes(snapshot.sourceSize || record.byteCount)
+        : snapshot.sourceExists === true
+          ? "存在 · " + formatBytes(snapshot.sourceSize || record.byteCount)
+          : snapshot.sourceExists === false ? "原位置未找到" : "无法确认";
+    }
+    var targetStatus = !snapshot
+      ? "等待核对"
+      : snapshot.targetExists === true
+        ? "存在 · " + formatBytes(snapshot.targetSize || record.byteCount)
+        : snapshot.targetExists === false ? "未找到" : "无法确认";
+    setText("recoverySourceStatus", sourceStatus);
+    setText("recoveryTargetStatus", targetStatus);
+    var linkStatus = "等待核对";
+    if (snapshot) {
+      linkStatus = snapshot.currentLinkState === "source"
+        ? "仍在原位置"
+        : snapshot.currentLinkState === "target"
+          ? "已在新位置"
+          : snapshot.currentLinkState === "mixed"
+            ? "部分在新位置"
+            : "无法唯一确认";
+    }
+    setText("recoveryLinkStatus", linkStatus);
+    var confirmation = recoveryMessage
+      || storedRecoveryError(record)
+      || "本次核对不会删除任何磁盘文件；真正更新 Premiere 链接、保存工程或清理原位置前，都会再次确认。";
+    var legacyFolderName = legacyBatchFolderNameForTarget(targetPath);
+    if (legacyFolderName) {
+      confirmation += " “" + legacyFolderName + "”是旧版已经创建的文件夹，本次不会改名。";
+    }
+    if (canClose) {
+      confirmation += " 两处同尺寸文件都已保留，Premiere 仍指向原位置；如果你决定自行处理，可以关闭这条旧记录。";
+    }
+    setText("recoveryConfirmation", confirmation);
   }
 
   function renderActivity() {
@@ -546,7 +721,7 @@
     var section = element("reviewSection");
     var list = element("reviewList");
     if (!section || !list) return;
-    section.hidden = reviewItems.length === 0;
+    section.hidden = Boolean(currentRecoveryRecord()) || reviewItems.length === 0;
     setText("reviewCountLabel", reviewItems.length + " 项");
     while (list.firstChild) list.removeChild(list.firstChild);
 
@@ -728,13 +903,15 @@
       view = { mode: "failure", kind: "danger", title: "自动整理已暂停", description: activePanelError, status: "已暂停", action: "重新检查", icon: "alert" };
     } else if (context && projectState) {
       var unresolved = unresolvedProtectedLibraries();
+      var persistedRecoveryError = storedRecoveryError(currentRecoveryRecord());
       if (projectState.pendingTransaction) {
         var cleanupRequired = projectState.pendingTransaction.status === "cleanup-pending";
+        var pendingFilename = Core.basename(projectState.pendingTransaction.sourcePath || recoveryTargetPath(projectState.pendingTransaction)) || "这个文件";
         view = cleanupRequired
-          ? { mode: "failure", kind: "danger", title: "原素材还没有彻底移走", description: "请在最近记录中查看待删除路径，手动删除后再检查一次。", status: "尚未完成", action: "检查上次整理", icon: "alert" }
-          : { mode: "failure", kind: "danger", title: "上次整理中断，需要检查", description: "只核对新旧位置和 Premiere 链接，检查时不会删除文件。", status: "需要检查", action: "检查上次整理", icon: "alert" };
+          ? { mode: "failure", kind: "danger", title: "原位置还没有清理", description: persistedRecoveryError || "先检查“" + pendingFilename + "”的两处位置和 Premiere 链接。检查本身不会删除文件。", status: "整理已暂停", action: "检查文件和链接", icon: "alert" }
+          : { mode: "failure", kind: "danger", title: "上次整理未完成", description: persistedRecoveryError || "先检查“" + pendingFilename + "”的原位置、新位置和 Premiere 链接。检查本身不会移动或删除文件。", status: "整理已暂停", action: "检查文件和链接", icon: "alert" };
       } else if (projectState.pendingProjectSave) {
-        view = { mode: "failure", kind: "danger", title: "Premiere 工程还没有确认保存", description: "素材已在整理后的位置；请检查链接并重新保存当前工程。", status: "需要检查", action: "检查上次整理", icon: "alert" };
+        view = { mode: "failure", kind: "danger", title: "Premiere 工程保存尚未确认", description: persistedRecoveryError || "先检查素材的新位置和 Premiere 链接。检查本身不会删除文件。", status: "整理已暂停", action: "检查文件和链接", icon: "alert" };
       } else if (activePanelError) {
         view = { mode: "failure", kind: "danger", title: "自动整理已暂停", description: activePanelError, status: "已暂停", action: "重新检查", icon: "alert" };
       } else if (busy) {
@@ -774,8 +951,24 @@
       if (!currentProtectionSetup()) onboardingStage = "protection";
       else if (!currentProjectSetup() || !projectState.initialized || State.needsCollectionPolicyAcceptance(projectState)) onboardingStage = "auto";
     }
+    var recoveryRecord = currentRecoveryRecord();
     body.dataset.state = view.mode;
     body.dataset.onboarding = onboardingStage;
+    body.dataset.recovery = recoveryRecord ? "true" : "false";
+    ["autoCollectControl", "batchSection", "actionSection", "protectedCount", "activityDetails", "reviewSection"].forEach(function (id) {
+      var section = element(id);
+      if (section) section.hidden = Boolean(recoveryRecord);
+    });
+    if (recoveryRecord) {
+      var settingsPage = element("settingsPage");
+      if (settingsPage && !settingsPage.hidden) {
+        settingsPage.hidden = true;
+        settingsPage.setAttribute("aria-hidden", "true");
+        if (root) root.hidden = false;
+        var settingsButton = element("protectedCount");
+        if (settingsButton) settingsButton.setAttribute("aria-expanded", "false");
+      }
+    }
     if (root) {
       root.dataset.runtimeState = view.mode;
       root.setAttribute("aria-busy", busy ? "true" : "false");
@@ -793,6 +986,8 @@
       action.hidden = !view.action;
       action.textContent = view.action;
       action.dataset.intent = view.action;
+      if (recoveryRecord && typeof action.removeAttribute === "function") action.removeAttribute("aria-controls");
+      else if (!recoveryRecord && typeof action.setAttribute === "function") action.setAttribute("aria-controls", "settingsPage");
     }
 
     setText("projectName", context ? context.projectName : "未连接工程");
@@ -803,10 +998,18 @@
     var projectName = element("projectName");
     if (projectName) projectName.title = context ? (context.projectPath || context.projectName || "") : "";
 
-    var batch = projectState ? State.currentBatch(projectState) : null;
+    var batch = projectState && !recoveryRecord ? State.currentBatch(projectState) : null;
     setText("batchName", batch ? batch.name : "等待工程");
     var batchHeading = element("batchHeading");
     if (batchHeading) batchHeading.setAttribute("aria-label", batch ? "当前交接文件夹：" + relativeBatchPath() : "等待工程");
+    var batchLegacyNote = element("batchLegacyNote");
+    if (batchLegacyNote) {
+      var legacyBatchName = batch && /^\d{3}_/.test(String(batch.name || "")) ? String(batch.name) : "";
+      batchLegacyNote.hidden = !legacyBatchName;
+      batchLegacyNote.textContent = legacyBatchName
+        ? "“" + legacyBatchName + "”是旧版已经创建的文件夹，本次不会改名。"
+        : "";
+    }
     setText("fileCount", batch ? batch.fileCount : 0);
     setText("fileSize", batch ? formatBytes(batch.byteCount) : "0 B");
     setText("batchPath", batch ? relativeBatchPath() : "素材");
@@ -819,13 +1022,15 @@
       autoToggle.disabled = !context || !context.projectPath || !projectState || !currentProtectionSetup() || !currentProjectSetup() || !projectState.initialized || State.needsCollectionPolicyAcceptance(projectState) || Boolean(projectState && (projectState.pendingTransaction || projectState.pendingProjectSave)) || Boolean(activePanelError) || Boolean(unresolved && unresolved.length) || busy;
     }
     var openButton = element("openBatchButton");
-    if (openButton) openButton.disabled = !context || !context.projectPath || !currentProjectSetup() || busy;
+    if (openButton) openButton.disabled = !context || !context.projectPath || !projectState || busy;
     var handoffButton = element("handoffButton");
     if (handoffButton) handoffButton.disabled = !projectState || !currentProjectSetup() || !projectState.initialized || busy || pendingCount > 0 || reviewCount > 0 || Boolean(projectState.pendingTransaction) || Boolean(projectState.pendingProjectSave) || Boolean(activePanelError) || Boolean(unresolved && unresolved.length);
     var handoffBlockedByWork = busy || pendingCount > 0;
     var handoffBlockedByProblem = reviewCount > 0 || Boolean(projectState && (projectState.pendingTransaction || projectState.pendingProjectSave)) || Boolean(activePanelError) || Boolean(unresolved && unresolved.length);
-    setText("handoffHint", !currentProjectSetup()
-      ? "先开始整理此工程，再使用交接文件夹。"
+    setText("handoffHint", projectState && (projectState.pendingTransaction || projectState.pendingProjectSave)
+      ? "先核对并结束上次整理，才能完成交接。"
+      : !currentProjectSetup()
+        ? "先开始整理此工程，再使用交接文件夹。"
       : handoffBlockedByWork
         ? "素材整理完成后才能交接。"
         : handoffBlockedByProblem
@@ -842,6 +1047,7 @@
     renderReviewItems();
     renderProtectedLibraries();
     renderSettingsState(activePanelError);
+    renderRecoveryDetails();
   }
 
   async function readProjectState(nextContext) {
@@ -876,32 +1082,48 @@
 
   async function persistState() {
     if (!context || !context.workspaceRoot || !projectState) throw new Error("没有可保存的素材空间");
+    var saved;
     try {
-      var saved = await Storage.writeJsonAtomic(fs, Storage.statePath(context.workspaceRoot), projectState, {
+      saved = await Storage.writeJsonAtomic(fs, Storage.statePath(context.workspaceRoot), projectState, {
         expectedRevision: stateRevision,
         recovered: stateRecoveredFromBackup,
       });
-      stateRevision = saved.revision;
-      stateRecoveredFromBackup = false;
-      if (saved.warning) {
-        reportRuntimeError("保存整理记录后出现警告", { message: String(saved.warning) });
-        setMachineSetting("auto", false);
-        stopMonitor(false);
-        storageWarning = saved.lockReleaseWarning
-          ? "整理记录已经保存，但状态写锁未能清理；请关闭另一个 Premiere 进程并检查 .lock 文件"
-          : "整理记录已经保存，但保存后的复核没有完成；自动整理已暂停，请重新检查当前工程。";
-      } else storageWarning = "";
-      return saved;
     } catch (error) {
       var code = String(error && error.code || "");
       if (["MATERIAL_BATCH_STORAGE_CONFLICT", "MATERIAL_BATCH_STORAGE_LOCKED", "MATERIAL_BATCH_STORAGE_STALE_LOCK", "MATERIAL_BATCH_STORAGE_LOCK_UNSUPPORTED"].indexOf(code) >= 0) {
-        setMachineSetting("auto", false);
+        try { setMachineSetting("auto", false); } catch (settingsError) {
+          reportRuntimeError("暂停自动整理的本机设置保存失败", settingsError);
+        }
         stopMonitor(false);
         stateReloadRequired = code === "MATERIAL_BATCH_STORAGE_CONFLICT";
         panelError = userFacingRuntimeError(error, "整理记录正在被另一个 Premiere 进程修改，自动整理已暂停。");
       }
       throw error;
     }
+    stateRevision = saved.revision;
+    stateRecoveredFromBackup = false;
+    if (saved.warning) {
+      reportRuntimeError("保存整理记录后出现警告", { message: String(saved.warning) });
+      var settingsWarning = "";
+      try { setMachineSetting("auto", false); } catch (settingsError) {
+        reportRuntimeError("暂停自动整理的本机设置保存失败", settingsError);
+        settingsWarning = "；本机自动开关未能保存，但本次整理记录已经安全写入";
+      }
+      stopMonitor(false);
+      storageWarning = (saved.lockReleaseWarning
+        ? "整理记录已经保存，但状态写锁未能清理；请关闭另一个 Premiere 进程并检查 .lock 文件"
+        : "整理记录已经保存，但保存后的复核没有完成；自动整理已暂停，请重新检查当前工程。") + settingsWarning;
+    } else storageWarning = "";
+    return saved;
+  }
+
+  function assertCheckpointWriteVerified(saved, message) {
+    if (!saved || !saved.warning) return;
+    var error = new Error(message || "整理记录已经写入，但保存后的安全复核没有完成；未继续处理素材");
+    error.code = saved.lockReleaseWarning
+      ? "MATERIAL_BATCH_STORAGE_LOCKED"
+      : "MATERIAL_BATCH_STORAGE_UNVERIFIED";
+    throw error;
   }
 
   async function refreshContext(options) {
@@ -918,6 +1140,8 @@
     if (changed) {
       setSettingsMessage("", "");
       folderActionMessage = "";
+      recoverySnapshot = null;
+      recoveryMessage = "";
     }
     stateRevision = Storage.MISSING_REVISION;
     stateRecoveredFromBackup = false;
@@ -931,11 +1155,10 @@
       throw error;
     }
     await refreshProtectedMappingStatus();
-    panelError = projectState && projectState.pendingTransaction
-      ? "检测到上次整理未完成，自动整理已暂停"
-      : projectState && projectState.pendingProjectSave
-        ? "Premiere 工程还有一处补链没有确认保存，自动整理已暂停"
-        : "";
+    panelError = "";
+    if (projectState && (projectState.pendingTransaction || projectState.pendingProjectSave) && storageWarning) {
+      recoveryMessage = storageWarning;
+    }
     pendingCount = 0;
     reviewCount = 0;
     reviewItems = [];
@@ -953,7 +1176,7 @@
     return context;
   }
 
-  async function ensureBatchDirectories() {
+  function currentBatchDirectories() {
     var root = mediaRoot();
     var current = batchPath();
     if (!root || !current) throw new Error("无法确定当前素材文件夹");
@@ -963,6 +1186,11 @@
     if (!Core.isPathInside(current, root) || Core.samePath(current, root)) {
       throw new Error("当前素材文件夹的位置不安全");
     }
+    return { root: root, current: current };
+  }
+
+  async function ensureBatchDirectories() {
+    var directories = currentBatchDirectories();
     async function ensureDirectory(nativePath) {
       try {
         await fs.mkdir(nativePath, { recursive: true });
@@ -981,8 +1209,27 @@
         throw batchDirectoryError(nativePath, null, true);
       }
     }
-    await ensureDirectory(root);
-    await ensureDirectory(current);
+    await ensureDirectory(directories.root);
+    await ensureDirectory(directories.current);
+  }
+
+  async function verifyExistingBatchDirectory() {
+    var directories = currentBatchDirectories();
+    var stat;
+    try {
+      stat = await fs.lstat(directories.current);
+    } catch (error) {
+      if (Core.isMissingPathError(error)) {
+        var missingError = new Error("当前素材文件夹还没有建立。开始整理此工程后，插件会自动建立它。");
+        missingError.code = "MATERIAL_BATCH_DIRECTORY_MISSING";
+        throw missingError;
+      }
+      throw batchDirectoryError(directories.current, error, false);
+    }
+    if (!stat || typeof stat.isDirectory !== "function" || !stat.isDirectory()) {
+      throw batchDirectoryError(directories.current, null, true);
+    }
+    return directories.current;
   }
 
   function notReadyError(message) {
@@ -999,13 +1246,13 @@
     }
     var stat;
     try {
-      stat = await fs.lstat(nativePath);
+      stat = await Transaction.lstatForIdentity(fs, nativePath);
     } catch (error) {
       throw notReadyError("文件暂时无法读取，稍后重试");
     }
     if (typeof stat.isFile !== "function" || !stat.isFile()) throw new Error("第一版只处理单个文件素材");
     var currentFingerprint = Transaction.fingerprintFromStat(stat);
-    if (!Transaction.samePortableFingerprint(expectedFingerprint, currentFingerprint)) {
+    if (!Transaction.sameStrongPathFingerprint(expectedFingerprint, currentFingerprint)) {
       stabilityTracker.observe(nativePath, currentFingerprint, Date.now());
       throw notReadyError("文件在整理前又发生变化，已继续等待它写完");
     }
@@ -1038,7 +1285,7 @@
     var targetPath = targetPathForMapping(mapping);
     var targetStat;
     try {
-      targetStat = await fs.lstat(targetPath);
+      targetStat = await Transaction.lstatForIdentity(fs, targetPath);
     } catch (error) {
       return {
         kind: Core.isMissingPathError(error) ? "mapping-target-missing" : "mapping-target-unavailable",
@@ -1053,7 +1300,7 @@
     }
     var targetFingerprint = Transaction.fingerprintFromStat(targetStat);
     var targetStatus = ScanPolicy.mappingTargetStatus(mapping, true, targetFingerprint);
-    if (targetStatus === "match" && !Transaction.samePortableFingerprint(mapping.targetFingerprint, targetFingerprint)) {
+    if (targetStatus === "match" && !Transaction.sameStrongPathFingerprint(mapping.targetFingerprint, targetFingerprint)) {
       targetStatus = "mismatch";
     }
     return {
@@ -1073,7 +1320,7 @@
         ? inspectMappingTarget(mappings[0])
         : { kind: "mapping-ambiguous", mapping: null, sourceFingerprint: null };
     }
-    var sourceFingerprint = Transaction.fingerprintFromStat(await fs.lstat(group.mediaPath));
+    var sourceFingerprint = Transaction.fingerprintFromStat(await Transaction.lstatForIdentity(fs, group.mediaPath));
     return { kind: "reused-path", mapping: null, sourceFingerprint: sourceFingerprint };
   }
 
@@ -1095,12 +1342,23 @@
       var modeEvidence = await Transaction.resolveMoveMode(fs, sourcePath, batchPath());
       var plannedMode = modeEvidence.mode;
       var targetPath = await chooseTargetPath(sourcePath);
-      var targetRelativePath = Core.joinNativePath(projectState.mediaFolderName, batch.name, Core.basename(targetPath));
+      var targetRelativePath = relativePathForContext(projectState.mediaFolderName, batch.name, Core.basename(targetPath));
       if (!Core.isSafeRelativePath(targetRelativePath)) throw new Error("无法生成安全的素材文件路径");
       var sourceStat = await verifyStableFile(sourcePath, group.sourceFingerprint, lifecycleGeneration);
       var sourceFingerprint = Transaction.fingerprintFromStat(sourceStat);
       var transactionId = "tx-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 7);
       var cleanupPath = Transaction.cleanupPathFor(sourcePath, transactionId);
+      var itemSignatures = group.entries.map(function (entry) {
+        return {
+          itemId: String(entry.itemId || ""),
+          itemName: String(entry.itemName || ""),
+          mediaPath: String(entry.mediaPath || sourcePath),
+        };
+      });
+      var transactionItemIds = itemSignatures.map(function (entry) { return entry.itemId; }).filter(Boolean);
+      if (transactionItemIds.length !== group.entries.length || new Set(transactionItemIds).size !== transactionItemIds.length) {
+        throw new Error("Premiere 没有提供完整且唯一的素材项身份，不能安全地整理这个文件");
+      }
       projectState = State.beginTransaction(projectState, {
         id: transactionId,
         sourcePath: sourcePath,
@@ -1116,15 +1374,12 @@
         projectPath: context.projectPath,
         projectIdentity: context.identity,
         itemCount: group.entries.length,
-        itemIds: group.entries.map(function (entry) { return entry.itemId; }).filter(Boolean),
+        itemIds: transactionItemIds,
+        itemSignatures: itemSignatures,
       }, new Date());
       try {
         var journalSave = await persistState();
-        if (journalSave && journalSave.lockReleaseWarning) {
-          var lockError = new Error("移动记录已经写入，但状态写锁没有清理；素材尚未移动");
-          lockError.code = "MATERIAL_BATCH_STORAGE_LOCKED";
-          throw lockError;
-        }
+        assertCheckpointWriteVerified(journalSave, "移动记录已经写入，但保存后的安全复核没有完成；素材尚未移动");
       } catch (journalError) {
         if (!journalSave) projectState = State.clearPendingTransaction(projectState, new Date());
         var journalFailure = new Error("无法记录本次移动，素材尚未移动。自动整理已暂停，请重新检查当前工程。");
@@ -1146,6 +1401,46 @@
           deleteSource: true,
           validate: function () { return Premiere.contextStillActive(ppro, context.identity); },
           persistProject: function () { return context.project.save(); },
+          beforeRelink: async function (details) {
+            projectState = State.updatePendingTransaction(projectState, {
+              id: transactionId,
+              targetFingerprint: details.targetFingerprint,
+              sourceFingerprint: details.sourceFingerprint,
+              targetMethod: details.targetMethod,
+              mode: details.mode,
+              modeEvidence: details.modeEvidence,
+              itemIds: transactionItemIds,
+              itemCount: transactionItemIds.length,
+              itemSignatures: itemSignatures,
+              status: "ready-to-relink",
+            }, new Date());
+            var checkpointSave = await persistState();
+            assertCheckpointWriteVerified(checkpointSave, "目标文件记录已经写入，但保存后的安全复核没有完成；Premiere 链接尚未修改");
+          },
+          beforeSourceCleanup: function () {
+            return verifyCompleteInventoryBeforeDelete(sourcePath, targetPath, transactionItemIds, cleanupPath);
+          },
+          beforeDelete: async function (details) {
+            var inventoryVerified = await verifyCompleteInventoryBeforeDelete(
+              sourcePath,
+              targetPath,
+              transactionItemIds,
+              cleanupPath
+            );
+            if (inventoryVerified === false) return false;
+            projectState = State.updatePendingTransaction(projectState, {
+              id: transactionId,
+              targetFingerprint: details.targetFingerprint,
+              targetMethod: details.targetMethod,
+              status: "ready-to-delete",
+            }, new Date());
+            var deleteCheckpointSave = await persistState();
+            assertCheckpointWriteVerified(
+              deleteCheckpointSave,
+              "删除前的文件身份记录已经写入，但保存后的安全复核没有完成；原素材未删除"
+            );
+            return true;
+          },
           onStage: function (stage) {
             busyStage = stage;
             render();
@@ -1159,17 +1454,33 @@
         result.id = transactionId;
         result.targetRelativePath = targetRelativePath;
         result.batchIndex = batch.index;
-        result.sourceFingerprint = sourceFingerprint;
-        projectState = State.commitTransaction(projectState, result, new Date());
+        var stateBeforeCommit = projectState;
+        try {
+          projectState = State.commitTransaction(projectState, result, new Date());
+          if (projectState.pendingTransaction
+            || !projectState.transactions.some(function (transaction) { return String(transaction.id || "") === transactionId; })) {
+            var commitConflict = new Error("整理结果与移动记录不一致，已保留待检查记录，不能标记为整理成功");
+            commitConflict.code = "MATERIAL_BATCH_TRANSACTION_COMMIT_CONFLICT";
+            throw commitConflict;
+          }
+          projectState = State.addActivity(
+            projectState,
+            result.sourceChanged ? "warn" : "ok",
+            result.sourceChanged ? "素材已移动；原路径出现另一份文件" : "已整理 " + Core.basename(targetPath),
+            new Date(),
+            { summary: result.sourceChanged ? sourcePath : formatBytes(result.byteCount) }
+          );
+          if (Array.isArray(result.warnings) && result.warnings.length) {
+            projectState = State.addActivity(projectState, "warn", "Premiere 返回异常，但链接核验已通过", new Date(), {
+              summary: result.warnings.join("；"),
+            });
+          }
+          await persistState();
+        } catch (commitError) {
+          projectState = stateBeforeCommit;
+          throw commitError;
+        }
         stabilityTracker.forget(sourcePath);
-        projectState = State.addActivity(
-          projectState,
-          result.sourceChanged ? "warn" : "ok",
-          result.sourceChanged ? "素材已移动；原路径出现另一份文件" : "已整理 " + Core.basename(targetPath),
-          new Date(),
-          { summary: result.sourceChanged ? sourcePath : formatBytes(result.byteCount) }
-        );
-        await persistState();
         return result;
       } catch (error) {
         reportRuntimeError("整理素材失败", error);
@@ -1181,7 +1492,7 @@
           summary: transactionMessage,
         });
         try { await persistState(); } catch (persistError) {}
-        setMachineSetting("auto", false);
+        pauseAutomaticBestEffort();
         panelError = transactionMessage + rollbackWarningSuffix(error);
         throw error;
       }
@@ -1205,7 +1516,7 @@
     var verification = await inspectMappingTarget(mapping);
     if (verification.kind !== "match") return { applied: false, decision: verification };
     if (decision.targetFingerprint
-      && !Transaction.samePortableFingerprint(decision.targetFingerprint, verification.targetFingerprint)) {
+      && !Transaction.sameStrongPathFingerprint(decision.targetFingerprint, verification.targetFingerprint)) {
       verification.kind = "mapping-target-mismatch";
       return { applied: false, decision: verification };
     }
@@ -1215,8 +1526,8 @@
     var projectSaveRecord = null;
     try {
       var itemIds = group.entries.map(function (entry) { return String(entry.itemId || ""); }).filter(Boolean);
-      if (itemIds.length !== group.entries.length) {
-        throw new Error("Premiere 没有提供完整的素材项身份，不能安全地自动补链");
+      if (itemIds.length !== group.entries.length || new Set(itemIds).size !== itemIds.length) {
+        throw new Error("Premiere 没有提供完整且唯一的素材项身份，不能安全地自动补链");
       }
       projectSaveRecord = {
         id: "save-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 7),
@@ -1227,12 +1538,13 @@
         projectIdentity: context.identity,
         itemIds: itemIds,
         itemCount: group.entries.length,
+        itemSignatures: group.entries.map(function (entry) {
+          return { itemId: String(entry.itemId || ""), itemName: String(entry.itemName || ""), mediaPath: String(entry.mediaPath || "") };
+        }),
       };
       projectState = State.beginProjectSave(projectState, projectSaveRecord, new Date());
       var journalSave = await persistState();
-      if (journalSave.lockReleaseWarning) {
-        throw new Error("补链记录已经写入，但状态写锁未能清理；Premiere 链接尚未修改");
-      }
+      assertCheckpointWriteVerified(journalSave, "补链记录已经写入，但保存后的安全复核没有完成；Premiere 链接尚未修改");
       await Transaction.relinkExisting({
         fs: fs,
         projectItems: group.entries.map(function (entry) { return entry.clip; }),
@@ -1243,7 +1555,7 @@
       });
       var afterRelink = await inspectMappingTarget(mapping);
       if (afterRelink.kind !== "match"
-        || !Transaction.samePortableFingerprint(verification.targetFingerprint, afterRelink.targetFingerprint)) {
+        || !Transaction.sameStrongPathFingerprint(verification.targetFingerprint, afterRelink.targetFingerprint)) {
         var changed = new Error("补链期间新位置文件发生变化，已停止自动整理");
         changed.code = "MATERIAL_BATCH_MAPPING_TARGET_CHANGED";
         throw changed;
@@ -1265,7 +1577,7 @@
         });
         try { await persistState(); } catch (persistError) {}
       }
-      setMachineSetting("auto", false);
+      pauseAutomaticBestEffort();
       panelError = relinkMessage + rollbackWarningSuffix(error);
       throw error;
     } finally {
@@ -1355,18 +1667,20 @@
       return { ok: false, error: "有不搬动文件夹需要重新选择" };
     }
     if (projectState.pendingTransaction) {
-      panelError = "检测到上次整理未完成，自动整理已暂停";
+      panelError = "";
+      recoveryMessage = "";
       setMachineSetting("auto", false);
       stopMonitor(false);
       render();
-      return { ok: false, error: panelError };
+      return { ok: false, error: "检测到上次整理未完成，等待核对" };
     }
     if (projectState.pendingProjectSave) {
-      panelError = "Premiere 工程还有一处补链没有确认保存，自动整理已暂停";
+      panelError = "";
+      recoveryMessage = "";
       setMachineSetting("auto", false);
       stopMonitor(false);
       render();
-      return { ok: false, error: panelError };
+      return { ok: false, error: "Premiere 工程还有一处补链等待核对" };
     }
     var expectedIdentity = context.identity;
     var lifecycleGeneration = lifecycleGuard.current();
@@ -1408,7 +1722,7 @@
         if (fingerprintKind === "collect") outsideCollectCount += 1;
         else outsideReviewCount += 1;
         try {
-          var fingerprintStat = await fs.lstat(groups[fingerprintIndex].mediaPath);
+          var fingerprintStat = await Transaction.lstatForIdentity(fs, groups[fingerprintIndex].mediaPath);
           groups[fingerprintIndex].sourceFingerprint = typeof fingerprintStat.isFile === "function" && fingerprintStat.isFile()
             ? Transaction.fingerprintFromStat(fingerprintStat)
             : null;
@@ -1466,7 +1780,8 @@
             summary: groups.length + " 条路径将按当前规则检查",
           });
           await ensureBatchDirectories();
-          await persistState();
+          var initializationSave = await persistState();
+          assertCheckpointWriteVerified(initializationSave, "素材空间已经建立，但整理记录的安全复核没有完成；素材尚未移动");
         } else {
           render();
           return { ok: true, initialized: false };
@@ -1537,10 +1852,10 @@
           continue;
         }
 
-        if (!ScanPolicy.hasPortableFingerprint(group.sourceFingerprint)) {
+        if (!Transaction.hasStrongFileIdentity(group.sourceFingerprint)) {
           if (recordReview(group, "source-unavailable", {
             type: "无法读取",
-            reason: "当前无法读取这个文件的大小和修改时间，插件不会冒险移动。",
+            reason: "当前无法读取这个文件的大小、修改时间和可靠文件身份，插件不会冒险移动。",
             revealPath: Core.dirname(group.mediaPath),
             actions: [["reveal", "打开所在位置", "secondary"], ["retry", "重新检查", "secondary"]],
           })) dirtyState = true;
@@ -1580,8 +1895,7 @@
         }
       }
       if (projectState) {
-        setMachineSetting("auto", false);
-        stopMonitor(false);
+        pauseAutomaticBestEffort();
       }
       return { ok: false, error: panelError || userFacingRuntimeError(error) };
     } finally {
@@ -1597,8 +1911,7 @@
       panelError = userFacingRuntimeError(error);
       stateReloadRequired = true;
       if (projectState) {
-        setMachineSetting("auto", false);
-        stopMonitor(false);
+        pauseAutomaticBestEffort();
       }
       render();
       return { ok: false, error: panelError };
@@ -1753,7 +2066,8 @@
       projectState = State.addActivity(projectState, "ok", "已确认当前整理规则", new Date(), {
         summary: "工程文件夹内和不搬动名单中的素材保持原位",
       });
-      await persistState();
+      var policySave = await persistState();
+      assertCheckpointWriteVerified(policySave, "整理规则已经确认，但整理记录的安全复核没有完成；素材尚未移动");
       if (!(await Premiere.contextStillActive(ppro, expectedIdentity))) {
         throw new Error("确认规则期间活动工程已切换，请在当前工程中重新操作");
       }
@@ -1814,13 +2128,233 @@
     folderActionMessage = "";
     await operationQueue.run(async function () {
       await refreshContext();
-      if (!context || !projectState || !currentProjectSetup()) throw new Error("请先开始整理当前工程");
-      await ensureBatchDirectories();
-      await openDirectory(batchPath(), "打开当前素材文件夹");
+      if (!context || !context.projectPath || !projectState) throw new Error("请先打开并保存 Premiere 工程");
+      var currentDirectory = await verifyExistingBatchDirectory();
+      await openDirectory(currentDirectory, "打开当前素材文件夹");
       render();
     }).catch(function (error) {
       reportRuntimeError("打开当前素材文件夹失败", error);
       folderActionMessage = userFacingRuntimeError(error, "无法打开当前素材文件夹，请检查工程所在磁盘是否已连接后重试。");
+      render();
+    });
+  }
+
+  async function openRecoveryTarget() {
+    folderActionMessage = "";
+    await operationQueue.run(async function () {
+      await refreshContext();
+      var record = currentRecoveryRecord();
+      var targetPath = recoveryTargetPath(record);
+      if (!record || !targetPath) throw new Error("当前没有可打开的新位置");
+      await openDirectory(Core.dirname(targetPath), "打开整理后的新位置");
+    }).catch(function (error) {
+      reportRuntimeError("打开整理后的新位置失败", error);
+      recoveryMessage = userFacingRuntimeError(error, "无法打开新位置，请检查工程所在磁盘是否已连接。未改动任何文件。");
+      render();
+    });
+  }
+
+  async function openRecoverySource() {
+    folderActionMessage = "";
+    await operationQueue.run(async function () {
+      await refreshContext();
+      var record = currentRecoveryRecord();
+      var snapshot = matchingRecoverySnapshot(record);
+      var sourcePath = recoverySourcePath(record, snapshot);
+      if (!record || !sourcePath) throw new Error("当前没有可打开的原素材位置");
+      await openDirectory(Core.dirname(sourcePath), "打开原素材所在位置");
+    }).catch(function (error) {
+      reportRuntimeError("打开原素材所在位置失败", error);
+      recoveryMessage = userFacingRuntimeError(error, "无法打开原素材所在位置，请检查磁盘是否已连接。未改动任何文件。");
+      render();
+    });
+  }
+
+  function recoveryEntries(inventory, itemIds) {
+    var byId = {};
+    (inventory && inventory.entries || []).forEach(function (entry) {
+      if (entry.itemId) byId[String(entry.itemId)] = entry;
+    });
+    var entries = (itemIds || []).map(function (itemId) { return byId[String(itemId)]; });
+    if (!entries.length || entries.some(function (entry) { return !entry; })) {
+      throw new Error("核对期间素材项发生变化，未继续处理");
+    }
+    return entries;
+  }
+
+  function confirmRecoveryContinuation(pending, outcome) {
+    var itemCount = Math.max(1, Number(pending.itemCount) || 1);
+    var linkLine = outcome.currentLinkState === "target"
+      ? "Premiere 已指向新位置，将重新核验并保存工程。"
+      : outcome.currentLinkState === "mixed"
+        ? "部分素材项仍在原位置，将统一更新到新位置。"
+        : "Premiere 仍指向原位置，将更新到新位置。";
+    var message = "已核对：原位置" + (outcome.sourceExists ? "存在" : "未找到")
+      + "，新位置" + (outcome.targetExists ? "存在" : "未找到") + "。\n"
+      + linkLine + "\n\n"
+      + "继续后会处理 " + itemCount + " 个素材项，保存当前 Premiere 工程，并在再次核验通过后清理原位置的原素材。"
+      + "\n不会移动、复制或备份 .prproj 工程文件。\n\n确认继续？";
+    if (typeof window.confirm === "function") return window.confirm(message);
+    return false;
+  }
+
+  function confirmProjectSaveRecovery(pending, currentLinkState) {
+    var linkLine = currentLinkState === "target"
+      ? "Premiere 已指向新位置，将重新核验并保存当前工程。"
+      : currentLinkState === "mixed"
+        ? "部分素材项仍在原位置，将统一更新到新位置并保存当前工程。"
+        : "Premiere 仍指向原位置，将更新链接并保存当前工程。";
+    var message = "已核对新位置文件。\n" + linkLine
+      + "\n\n不会移动、复制、删除或备份 .prproj 工程文件，也不会删除原位置素材。\n\n确认继续？";
+    if (typeof window.confirm === "function") return window.confirm(message);
+    return false;
+  }
+
+  async function verifyRecoveryEntriesAtTarget(entries, targetPath) {
+    for (var index = 0; index < entries.length; index += 1) {
+      if (!(await Transaction.waitForVerifiedLink(entries[index].clip, targetPath, function (milliseconds) {
+        return new Promise(function (resolve) { setTimeout(resolve, milliseconds); });
+      }))) {
+        throw new Error("一个 Premiere 素材项仍未确认链接到新位置");
+      }
+    }
+  }
+
+  async function deletionInventorySnapshot(sourcePath, targetPath, expectedItemIds, cleanupPath) {
+    if (!context || !context.project || !(await Premiere.contextStillActive(ppro, context.identity))) {
+      throw new Error("删除原素材前活动工程已切换");
+    }
+    var inventory = await Premiere.inventoryProject(ppro, context.project);
+    Premiere.assertCompleteInventory(inventory);
+    var expectedIds = (expectedItemIds || []).map(String).filter(Boolean);
+    if (!expectedIds.length || new Set(expectedIds).size !== expectedIds.length) {
+      throw new Error("删除原素材前缺少完整且唯一的素材项身份");
+    }
+    var candidates = inventory.entries.filter(function (entry) {
+      return Core.samePath(entry.mediaPath, sourcePath)
+        || Core.samePath(entry.mediaPath, targetPath)
+        || (cleanupPath && Core.samePath(entry.mediaPath, cleanupPath));
+    });
+    var candidateIds = candidates.map(function (entry) { return String(entry.itemId || ""); });
+    var candidateIdSet = new Set(candidateIds);
+    if (candidateIds.some(function (itemId) { return !itemId; })
+      || candidateIdSet.size !== candidateIds.length
+      || candidateIds.length !== expectedIds.length
+      || expectedIds.some(function (itemId) { return !candidateIdSet.has(itemId); })) {
+      throw new Error("删除原素材前，当前工程引用该文件的素材项集合发生变化");
+    }
+    await verifyRecoveryEntriesAtTarget(candidates, targetPath);
+    if (!(await Premiere.contextStillActive(ppro, context.identity))) {
+      throw new Error("删除原素材前活动工程已切换");
+    }
+    return candidates;
+  }
+
+  async function verifyCompleteInventoryBeforeDelete(sourcePath, targetPath, expectedItemIds, cleanupPath) {
+    await deletionInventorySnapshot(sourcePath, targetPath, expectedItemIds, cleanupPath);
+    // 链接核验需要等待宿主刷新；再次读取完整清单，覆盖等待期间新增或替换素材项的情况。
+    await deletionInventorySnapshot(sourcePath, targetPath, expectedItemIds, cleanupPath);
+    return true;
+  }
+
+  async function inspectPendingTransactionRecord(pending) {
+    var targetPath = targetPathForMapping(pending);
+    var inventory = await Premiere.inventoryProject(ppro, context.project);
+    Premiere.assertCompleteInventory(inventory);
+    var outcome = await Recovery.inspectPending({
+      fs: fs,
+      pending: pending,
+      targetPath: targetPath,
+      mediaRoot: mediaRoot(),
+      linkedEntries: inventory.entries.map(function (entry) {
+        return { itemId: entry.itemId, itemName: entry.itemName, mediaPath: entry.mediaPath };
+      }),
+    });
+    return { targetPath: targetPath, outcome: outcome };
+  }
+
+  function confirmCloseLegacyRecovery(record, targetPath) {
+    var message = "保留现状并关闭这条旧记录？\n\n"
+      + "原位置和新位置的文件都会保持现在的样子，插件不会移动或删除素材，不会修改 Premiere 链接，也不会保存工程。\n\n"
+      + "自动整理会继续暂停。关闭后，请自行确认最终要保留哪一份文件。\n\n"
+      + "原位置：" + record.sourcePath + "\n新位置：" + targetPath;
+    if (typeof window.confirm === "function") return window.confirm(message);
+    return false;
+  }
+
+  async function closeLegacyRecoveryRecord() {
+    await operationQueue.run(async function () {
+      await refreshContext({ force: true });
+      if (!context || !context.projectPath || !projectState || !projectState.pendingTransaction) {
+        throw new Error("当前没有可以关闭的旧整理记录");
+      }
+      var pending = projectState.pendingTransaction;
+      if (pending.projectPath && !Core.samePath(pending.projectPath, context.projectPath)) {
+        throw new Error("请先打开这条旧记录所属的工程：" + Core.basename(pending.projectPath));
+      }
+      if (pending.projectIdentity && pending.projectIdentity !== context.identity) {
+        throw new Error("当前工程与这条旧整理记录不一致");
+      }
+      busy = true;
+      busyStage = "scan";
+      render();
+
+      var inspected = await inspectPendingTransactionRecord(pending);
+      recoverySnapshot = Object.assign({ id: pending.id }, inspected.outcome);
+      recoveryMessage = inspected.outcome.reason || "核对完成，未改动任何文件。";
+      render();
+      if (!canCloseLegacyRecoveryRecord(pending, recoverySnapshot)) {
+        throw new Error("当前现场不符合安全关闭条件，旧记录和所有文件都已保留");
+      }
+      if (!confirmCloseLegacyRecovery(pending, inspected.targetPath)) {
+        recoveryMessage = "已取消关闭。旧记录、两处文件和 Premiere 链接均保持不变。";
+        return;
+      }
+      if (!(await Premiere.contextStillActive(ppro, context.identity))) {
+        throw new Error("关闭记录前活动工程已切换，旧记录仍然保留");
+      }
+
+      var confirmedInspection = await inspectPendingTransactionRecord(pending);
+      recoverySnapshot = Object.assign({ id: pending.id }, confirmedInspection.outcome);
+      recoveryMessage = confirmedInspection.outcome.reason || "二次核对完成，未改动任何文件。";
+      if (!Core.samePath(confirmedInspection.targetPath, inspected.targetPath)
+        || !Transaction.sameStrongPathFingerprint(inspected.outcome.sourceFingerprint, confirmedInspection.outcome.sourceFingerprint)
+        || !Transaction.sameStrongPathFingerprint(inspected.outcome.targetFingerprint, confirmedInspection.outcome.targetFingerprint)
+        || !canCloseLegacyRecoveryRecord(pending, recoverySnapshot)) {
+        throw new Error("确认期间文件或 Premiere 链接状态发生变化，旧记录和所有文件都已保留");
+      }
+      if (!(await Premiere.contextStillActive(ppro, context.identity))) {
+        throw new Error("二次核对后活动工程已切换，旧记录仍然保留");
+      }
+
+      setMachineSetting("auto", false);
+
+      var previousState = projectState;
+      try {
+        projectState = State.clearPendingTransaction(projectState, new Date());
+        projectState = State.addActivity(projectState, "warn", "已保留现状并关闭旧整理记录", new Date(), {
+          summary: Core.basename(pending.sourcePath),
+          transactionId: String(pending.id || ""),
+          sourcePath: String(pending.sourcePath || ""),
+          targetPath: String(inspected.targetPath || ""),
+          reason: String(inspected.outcome.reason || ""),
+        });
+        await persistState();
+      } catch (persistError) {
+        projectState = previousState;
+        throw persistError;
+      }
+      panelError = "";
+      recoverySnapshot = null;
+      recoveryMessage = "";
+      folderActionMessage = "旧记录已关闭；文件和 Premiere 链接均未改动，自动整理仍保持暂停。";
+    }).catch(function (error) {
+      reportRuntimeError("关闭旧整理记录失败", error);
+      recoveryMessage = userFacingRuntimeError(error, "无法安全关闭这条旧记录，记录和所有文件均已保留。请重新核对后再试。");
+    }).finally(function () {
+      busy = false;
+      busyStage = "";
+      syncMonitor();
       render();
     });
   }
@@ -1847,6 +2381,12 @@
         if (pendingProjectSave.projectIdentity && pendingProjectSave.projectIdentity !== context.identity) {
           throw new Error("当前工程与待保存的补链记录不一致");
         }
+        var pendingSaveBlockReason = recoverySourceBlockReason(pendingProjectSave.sourcePath);
+        if (pendingSaveBlockReason) {
+          recoveryMessage = pendingSaveBlockReason + " 相关文件均未改动。";
+          render();
+          return;
+        }
 
         busy = true;
         busyStage = "scan";
@@ -1854,7 +2394,7 @@
         try {
           var pendingTargetPath = targetPathForMapping(pendingProjectSave);
           var pendingTargetFingerprint = await currentFileFingerprint(pendingTargetPath);
-          if (!Transaction.samePortableFingerprint(pendingProjectSave.targetFingerprint, pendingTargetFingerprint)) {
+          if (!Transaction.sameStrongPathFingerprint(pendingProjectSave.targetFingerprint, pendingTargetFingerprint)) {
             throw new Error("记录中的新位置文件已经变化，未重新保存 Premiere 工程");
           }
 
@@ -1873,8 +2413,24 @@
             if (entry.itemId) entryById[String(entry.itemId)] = entry;
           });
           var pendingEntries = expectedItemIds.map(function (itemId) { return entryById[itemId]; });
-          if (pendingEntries.some(function (entry) { return !entry; })) {
-            throw new Error("当前工程中的素材项与补链记录不一致，不能自动重新保存");
+          var missingSavedEntries = pendingEntries.filter(function (entry) { return !entry; }).length;
+          var rebuiltSavedEntries = false;
+          if (missingSavedEntries) {
+            var savedCandidates = pendingInventory.entries.filter(function (entry) {
+              return entry.itemId && (
+                Core.samePath(entry.mediaPath, pendingProjectSave.sourcePath)
+                || Core.samePath(entry.mediaPath, pendingTargetPath)
+              );
+            });
+            var savedCandidateIds = savedCandidates.map(function (entry) { return String(entry.itemId); });
+            if (missingSavedEntries !== expectedItemIds.length
+              || savedCandidates.length !== Number(pendingProjectSave.itemCount)
+              || new Set(savedCandidateIds).size !== savedCandidateIds.length) {
+              throw new Error("当前工程中的旧素材项身份已经失效，且无法得到唯一候选，未自动重新保存");
+            }
+            pendingEntries = savedCandidates;
+            expectedItemIds = savedCandidateIds;
+            rebuiltSavedEntries = true;
           }
           var entriesAtSource = pendingEntries.filter(function (entry) {
             return Core.samePath(entry.mediaPath, pendingProjectSave.sourcePath);
@@ -1885,21 +2441,72 @@
           if (entriesAtSource.length + entriesAtTarget.length !== pendingEntries.length) {
             throw new Error("素材项已指向记录之外的位置，未自动改动或保存工程");
           }
-          for (var linkedIndex = 0; linkedIndex < entriesAtTarget.length; linkedIndex += 1) {
-            var linkedClip = entriesAtTarget[linkedIndex].clip;
-            await linkedClip.refreshMedia();
-            var linkedPath = await linkedClip.getMediaFilePath();
-            if (!Core.samePath(linkedPath, pendingTargetPath) || (await linkedClip.isOffline())) {
-              throw new Error("记录中的新位置在 Premiere 中仍然离线，未重新保存工程");
-            }
+          await verifyRecoveryEntriesAtTarget(entriesAtTarget, pendingTargetPath);
+          var savedSourceExists = await Transaction.exists(fs, pendingProjectSave.sourcePath);
+          var savedSourceSize = 0;
+          if (savedSourceExists) {
+            try { savedSourceSize = Transaction.statSize(await fs.lstat(pendingProjectSave.sourcePath)); } catch (sourceReadError) {}
+          }
+          var savedLinkState = entriesAtSource.length === pendingEntries.length
+            ? "source"
+            : entriesAtTarget.length === pendingEntries.length ? "target" : "mixed";
+          recoverySnapshot = {
+            id: pendingProjectSave.id,
+            sourceExists: savedSourceExists,
+            targetExists: true,
+            sourceSize: savedSourceSize,
+            targetSize: Transaction.statSize(pendingTargetFingerprint),
+            currentLinkState: savedLinkState,
+          };
+          recoveryMessage = rebuiltSavedEntries
+            ? "Premiere 重启后素材项身份已变化，但已找到唯一候选。继续前需要你确认。"
+            : "核对完成，等待你确认是否更新链接并保存工程。";
+          render();
+          if (!confirmProjectSaveRecovery(pendingProjectSave, savedLinkState)) {
+            recoveryMessage = "已核对，尚未更新链接或保存工程。";
+            return;
           }
 
-          if (entriesAtSource.length) {
+          var confirmedSavedInventory = await Premiere.inventoryProject(ppro, context.project);
+          Premiere.assertCompleteInventory(confirmedSavedInventory);
+          var confirmedSavedEntries = recoveryEntries(confirmedSavedInventory, expectedItemIds);
+          if (confirmedSavedEntries.some(function (entry) {
+            return !Core.samePath(entry.mediaPath, pendingProjectSave.sourcePath)
+              && !Core.samePath(entry.mediaPath, pendingTargetPath);
+          })) {
+            throw new Error("确认期间素材项链接发生变化，未继续处理");
+          }
+          var confirmedEntriesAtSource = confirmedSavedEntries.filter(function (entry) {
+            return Core.samePath(entry.mediaPath, pendingProjectSave.sourcePath);
+          });
+          var confirmedEntriesAtTarget = confirmedSavedEntries.filter(function (entry) {
+            return Core.samePath(entry.mediaPath, pendingTargetPath);
+          });
+          await verifyRecoveryEntriesAtTarget(confirmedEntriesAtTarget, pendingTargetPath);
+          if (rebuiltSavedEntries) {
+            projectState = State.updatePendingProjectSave(projectState, {
+              id: pendingProjectSave.id,
+              itemIds: expectedItemIds,
+              itemCount: expectedItemIds.length,
+              itemSignatures: confirmedSavedEntries.map(function (entry) {
+                return { itemId: String(entry.itemId || ""), itemName: String(entry.itemName || ""), mediaPath: String(entry.mediaPath || "") };
+              }),
+              status: "recovery-confirmed",
+              recoveryConfirmedAt: new Date().toISOString(),
+            }, new Date());
+            var rebuiltSaveCheckpoint = await persistState();
+            assertCheckpointWriteVerified(
+              rebuiltSaveCheckpoint,
+              "恢复确认记录已经写入，但状态写锁未能清理；Premiere 链接尚未修改"
+            );
+          }
+
+          if (confirmedEntriesAtSource.length) {
             busyStage = "relink";
             render();
             await Transaction.relinkExisting({
               fs: fs,
-              projectItems: entriesAtSource.map(function (entry) { return entry.clip; }),
+              projectItems: confirmedEntriesAtSource.map(function (entry) { return entry.clip; }),
               sourcePath: pendingProjectSave.sourcePath,
               targetPath: pendingTargetPath,
               validate: function () { return Premiere.contextStillActive(ppro, context.identity); },
@@ -1914,9 +2521,14 @@
             throw new Error("重新保存期间活动工程已切换");
           }
           var afterSaveFingerprint = await currentFileFingerprint(pendingTargetPath);
-          if (!Transaction.samePortableFingerprint(pendingTargetFingerprint, afterSaveFingerprint)) {
+          if (!Transaction.sameStrongPathFingerprint(pendingTargetFingerprint, afterSaveFingerprint)) {
             throw new Error("重新保存期间新位置文件发生变化，已保留待检查记录");
           }
+          var savedAfterInventory = await Premiere.inventoryProject(ppro, context.project);
+          Premiere.assertCompleteInventory(savedAfterInventory);
+          var savedAfterEntries = recoveryEntries(savedAfterInventory, expectedItemIds);
+          await verifyRecoveryEntriesAtTarget(savedAfterEntries, pendingTargetPath);
+          await verifyRecoveryTargetFingerprint(pendingTargetPath, pendingTargetFingerprint, "最终核验时");
 
           projectState = State.clearPendingProjectSave(projectState, new Date());
           projectState = State.addActivity(projectState, "ok", "已确认 Premiere 工程保存完成", new Date(), {
@@ -1924,6 +2536,8 @@
           });
           await persistState();
           panelError = "";
+          recoverySnapshot = null;
+          recoveryMessage = "";
           return;
         } catch (saveError) {
           if (!projectState.pendingProjectSave) {
@@ -1940,24 +2554,29 @@
       if (pending.projectIdentity && pending.projectIdentity !== context.identity) {
         throw new Error("当前工程与上次整理记录不一致");
       }
+      var pendingBlockReason = recoverySourceBlockReason(pending.sourcePath);
+      if (pendingBlockReason) {
+        recoveryMessage = pendingBlockReason + " 相关文件均未改动。";
+        render();
+        return;
+      }
 
       busy = true;
       busyStage = "scan";
       render();
-      var targetPath = targetPathForMapping(pending);
-      var inventory = await Premiere.inventoryProject(ppro, context.project);
-      Premiere.assertCompleteInventory(inventory);
-      var outcome = await Recovery.inspectPending({
-        fs: fs,
-        pending: pending,
-        targetPath: targetPath,
-        mediaRoot: mediaRoot(),
-        linkedEntries: inventory.entries.map(function (entry) {
-          return { itemId: entry.itemId, mediaPath: entry.mediaPath };
-        }),
-      });
+      var inspected = await inspectPendingTransactionRecord(pending);
+      var targetPath = inspected.targetPath;
+      var outcome = inspected.outcome;
+      recoverySnapshot = Object.assign({ id: pending.id }, outcome);
+      recoveryMessage = outcome.reason || "核对完成，尚未改动任何文件。";
+      render();
 
-      if (outcome.kind === "manual") throw new Error(outcome.reason);
+      if (outcome.kind === "manual") {
+        recoveryMessage += canCloseLegacyRecoveryRecord(pending, recoverySnapshot)
+          ? " 未改动任何文件。你可以保留现状并关闭这条旧记录。"
+          : " 未改动任何文件，旧记录继续保留。";
+        return;
+      }
       if (!(await Premiere.contextStillActive(ppro, context.identity))) throw new Error("恢复检查期间活动工程已切换");
       if (outcome.kind === "rolled-back") {
         projectState = State.clearPendingTransaction(projectState, new Date());
@@ -1966,39 +2585,165 @@
         });
         await persistState();
         panelError = "";
+        recoverySnapshot = null;
+        recoveryMessage = "";
         return;
       }
       if (outcome.targetExists !== true) {
         throw new Error("恢复时找不到新位置文件，已保留待检查记录，请人工检查");
       }
-      // 保留首次恢复检查取得的文件指纹。旧版记录可能没有指纹；
-      // 遇到这种情况，就把这次经过验证的读取结果作为恢复基线。
-      // 后续读取绝不能把替换文件误写成新的已提交映射。
-      var recoveryTargetFingerprint = await currentFileFingerprint(targetPath);
-      if (ScanPolicy.hasPortableFingerprint(pending.targetFingerprint)
-        && !Transaction.samePortableFingerprint(pending.targetFingerprint, recoveryTargetFingerprint)) {
+      var resolvedItemIds = Array.isArray(outcome.resolvedItemIds) ? outcome.resolvedItemIds.map(String).filter(Boolean) : [];
+      if (resolvedItemIds.length !== Math.max(1, Number(pending.itemCount) || 1)
+        || new Set(resolvedItemIds).size !== resolvedItemIds.length) {
+        throw new Error("无法得到完整且唯一的素材项候选，未继续处理");
+      }
+      var recoveryTargetFingerprint = outcome.targetFingerprint || await currentFileFingerprint(targetPath);
+      if (!Transaction.hasStrongFileIdentity(pending.targetFingerprint)
+        || !Transaction.hasStrongFileIdentity(recoveryTargetFingerprint)
+        || (!Transaction.sameStrongPathFingerprint(pending.targetFingerprint, recoveryTargetFingerprint)
+          && !(outcome.targetCheckpointMatch === "hard-link"
+            && Transaction.sameHardLinkRecoveryFingerprint(pending.targetFingerprint, recoveryTargetFingerprint)))) {
         throw new Error("恢复检查后新位置文件已发生变化，已保留待检查记录，请人工检查");
       }
-      busyStage = "save";
+      recoveryMessage = "核对完成，等待你确认是否继续。";
       render();
-      await verifyRecoveryTargetFingerprint(targetPath, recoveryTargetFingerprint, "保存前");
-      if ((await context.project.save()) === false) {
+      if (!confirmRecoveryContinuation(pending, outcome)) {
+        recoveryMessage = "已核对，尚未继续。原位置和新位置都没有改动。";
+        return;
+      }
+
+      var confirmedInventory = await Premiere.inventoryProject(ppro, context.project);
+      Premiere.assertCompleteInventory(confirmedInventory);
+      var confirmedEntries = recoveryEntries(confirmedInventory, resolvedItemIds);
+      if (confirmedEntries.some(function (entry) {
+        return !Core.samePath(entry.mediaPath, pending.sourcePath) && !Core.samePath(entry.mediaPath, targetPath);
+      })) {
+        throw new Error("确认期间素材项链接发生变化，未继续处理");
+      }
+      var currentItemSignatures = confirmedEntries.map(function (entry) {
+        return { itemId: String(entry.itemId || ""), itemName: String(entry.itemName || ""), mediaPath: String(entry.mediaPath || "") };
+      });
+      projectState = State.updatePendingTransaction(projectState, {
+        id: pending.id,
+        itemIds: resolvedItemIds,
+        itemCount: resolvedItemIds.length,
+        itemSignatures: currentItemSignatures,
+        targetFingerprint: recoveryTargetFingerprint,
+        status: "recovery-confirmed",
+        recoveryConfirmedAt: new Date().toISOString(),
+      }, new Date());
+      await verifyRecoveryTargetFingerprint(targetPath, recoveryTargetFingerprint, "确认后");
+      var recoveryCheckpointSave = await persistState();
+      assertCheckpointWriteVerified(
+        recoveryCheckpointSave,
+        "恢复确认记录已经写入，但状态写锁未能清理；Premiere 链接和原位置文件尚未修改"
+      );
+      await verifyRecoveryTargetFingerprint(targetPath, recoveryTargetFingerprint, "改链前");
+
+      var entriesAtSource = confirmedEntries.filter(function (entry) {
+        return Core.samePath(entry.mediaPath, pending.sourcePath);
+      });
+      var entriesAtTarget = confirmedEntries.filter(function (entry) {
+        return Core.samePath(entry.mediaPath, targetPath);
+      });
+      await verifyRecoveryEntriesAtTarget(entriesAtTarget, targetPath);
+      var relinkWarnings = [];
+      busyStage = entriesAtSource.length ? "relink" : "save";
+      render();
+      if (entriesAtSource.length) {
+        var relinkResult = await Transaction.relinkExisting({
+          fs: fs,
+          projectItems: entriesAtSource.map(function (entry) { return entry.clip; }),
+          sourcePath: pending.sourcePath,
+          targetPath: targetPath,
+          validate: function () { return Premiere.contextStillActive(ppro, context.identity); },
+          persistProject: function () { return context.project.save(); },
+        });
+        relinkWarnings = Array.isArray(relinkResult.warnings) ? relinkResult.warnings : [];
+      } else if ((await context.project.save()) === false) {
         throw new Error("Premiere 工程仍未保存，原位置文件未处理");
       }
       if (!(await Premiere.contextStillActive(ppro, context.identity))) {
         throw new Error("恢复保存期间活动工程已切换");
       }
       await verifyRecoveryTargetFingerprint(targetPath, recoveryTargetFingerprint, "保存后");
-      if (outcome.cleanupPending) {
-        var remainingSourcePath = outcome.remainingSourcePath || pending.sourcePath;
-        var cleanupMessage = "待删除的原素材仍然存在：" + remainingSourcePath + "。请先手动删除它，再点击“检查上次整理”";
-        projectState = State.markCleanupPending(projectState, cleanupMessage, new Date());
-        projectState = State.addActivity(projectState, "error", "原素材还没有彻底移走", new Date(), { summary: remainingSourcePath });
-        await persistState();
-        throw new Error(cleanupMessage);
-      }
 
-      await verifyRecoveryTargetFingerprint(targetPath, recoveryTargetFingerprint, "记录前");
+      var afterSaveInventory = await Premiere.inventoryProject(ppro, context.project);
+      Premiere.assertCompleteInventory(afterSaveInventory);
+      var afterSaveEntries = recoveryEntries(afterSaveInventory, resolvedItemIds);
+      await verifyRecoveryEntriesAtTarget(afterSaveEntries, targetPath);
+
+      busyStage = "cleanup";
+      render();
+      var cleanupResult = await Transaction.cleanupVerifiedSource({
+        id: pending.id,
+        fs: fs,
+        sourcePath: pending.sourcePath,
+        cleanupPath: pending.cleanupPath,
+        sourceFingerprint: pending.sourceFingerprint,
+        targetPath: targetPath,
+        targetFingerprint: recoveryTargetFingerprint,
+        targetMethod: pending.targetMethod,
+        projectItems: afterSaveEntries.map(function (entry) { return entry.clip; }),
+        validate: function () { return Premiere.contextStillActive(ppro, context.identity); },
+        beforeSourceCleanup: function () {
+          return verifyCompleteInventoryBeforeDelete(
+            pending.sourcePath,
+            targetPath,
+            resolvedItemIds,
+            pending.cleanupPath || Transaction.cleanupPathFor(pending.sourcePath, pending.id)
+          );
+        },
+        beforeDelete: async function (details) {
+          var inventoryVerified = await verifyCompleteInventoryBeforeDelete(
+            pending.sourcePath,
+            targetPath,
+            resolvedItemIds,
+            pending.cleanupPath || Transaction.cleanupPathFor(pending.sourcePath, pending.id)
+          );
+          if (inventoryVerified === false) return false;
+          projectState = State.updatePendingTransaction(projectState, {
+            id: pending.id,
+            targetFingerprint: details.targetFingerprint,
+            targetMethod: details.targetMethod,
+            status: "ready-to-delete",
+          }, new Date());
+          var recoveryDeleteCheckpointSave = await persistState();
+          assertCheckpointWriteVerified(
+            recoveryDeleteCheckpointSave,
+            "删除前的文件身份记录已经写入，但状态写锁未能安全释放；原素材未删除"
+          );
+          return true;
+        },
+      });
+      if (cleanupResult.cleanupPending) {
+        var remainingSourcePath = typeof cleanupResult.remainingSourcePath === "string"
+          ? cleanupResult.remainingSourcePath
+          : pending.sourcePath;
+        var cleanupMessage = cleanupResult.cleanupWarning || "原位置文件暂时无法安全清理";
+        if (Transaction.hasStrongFileIdentity(cleanupResult.targetFingerprint)) {
+          projectState = State.updatePendingTransaction(projectState, {
+            id: pending.id,
+            targetFingerprint: cleanupResult.targetFingerprint,
+            targetMethod: cleanupResult.targetMethod || pending.targetMethod,
+          }, new Date());
+        }
+        projectState = State.markCleanupPending(projectState, cleanupMessage, new Date());
+        projectState = State.addActivity(
+          projectState,
+          "error",
+          remainingSourcePath ? "原素材还没有彻底移走" : "原素材删除后的核验没有完成",
+          new Date(),
+          { summary: remainingSourcePath || cleanupMessage }
+        );
+        await persistState();
+        recoveryMessage = cleanupMessage + "。相关文件已保留，请再次核对。";
+        return;
+      }
+      var finalRecoveryTargetFingerprint = cleanupResult.targetFingerprint || await currentFileFingerprint(targetPath);
+      await verifyRecoveryTargetFingerprint(targetPath, finalRecoveryTargetFingerprint, "清理后");
+
+      await verifyRecoveryTargetFingerprint(targetPath, finalRecoveryTargetFingerprint, "记录前");
       var stateBeforeCommit = projectState;
       try {
         projectState = State.commitTransaction(projectState, {
@@ -2014,18 +2759,22 @@
           modeEvidence: pending.modeEvidence || null,
           projectPath: pending.projectPath || context.projectPath,
           projectIdentity: pending.projectIdentity || context.identity,
-          cleanupPending: outcome.cleanupPending === true,
-          sourceChanged: outcome.sourceChanged === true,
-          targetFingerprint: recoveryTargetFingerprint,
+          cleanupPending: false,
+          sourceChanged: cleanupResult.sourceChanged === true,
+          targetFingerprint: finalRecoveryTargetFingerprint,
+          targetMethod: cleanupResult.targetMethod || pending.targetMethod,
         }, new Date());
-        projectState = State.addActivity(projectState, outcome.cleanupPending ? "warn" : "ok", outcome.cleanupPending ? "原位置文件已保留：" + Core.basename(pending.sourcePath) : "已恢复上次整理记录", new Date(), {
-          summary: outcome.cleanupPending
-            ? pending.sourcePath
-            : outcome.sourceChanged
-              ? "目标已在线；源路径现为另一份文件，未触碰"
-              : "目标文件与 Premiere 链接已确认",
+        projectState = State.addActivity(projectState, cleanupResult.sourceChanged ? "warn" : "ok", cleanupResult.sourceChanged ? "已完成整理；原路径出现另一份文件" : "已恢复上次整理记录", new Date(), {
+          summary: cleanupResult.sourceChanged
+            ? "目标已在线；源路径现为另一份文件，未触碰"
+            : "目标文件与 Premiere 链接已确认",
         });
-        await verifyRecoveryTargetFingerprint(targetPath, recoveryTargetFingerprint, "记录后");
+        if (relinkWarnings.length) {
+          projectState = State.addActivity(projectState, "warn", "Premiere 返回异常，但链接核验已通过", new Date(), {
+            summary: relinkWarnings.join("；"),
+          });
+        }
+        await verifyRecoveryTargetFingerprint(targetPath, finalRecoveryTargetFingerprint, "记录后");
         await persistState();
       } catch (commitError) {
         projectState = stateBeforeCommit;
@@ -2033,9 +2782,19 @@
         throw commitError;
       }
       panelError = "";
-    }).catch(function (error) {
-      reportRuntimeError("检查上次整理失败", error);
-      panelError = userFacingRuntimeError(error, "检查上次整理时遇到问题，插件没有继续处理素材。请核对磁盘连接后重试。");
+      recoverySnapshot = null;
+      recoveryMessage = "";
+    }).catch(async function (error) {
+      reportRuntimeError("核对上次整理失败", error);
+      var recoveryError = userFacingRuntimeError(error, "核对上次整理时遇到问题，插件没有继续处理素材。请检查磁盘连接后重试。");
+      panelError = "";
+      recoveryMessage = recoveryError + " 待处理记录已保留，请按页面显示核对原位置、新位置和 Premiere 链接。";
+      if (projectState && projectState.pendingTransaction) {
+        projectState = projectState.pendingTransaction.status === "cleanup-pending"
+          ? State.markCleanupPending(projectState, recoveryError, new Date())
+          : State.failTransaction(projectState, recoveryError, new Date());
+        try { await persistState(); } catch (persistError) {}
+      }
     }).finally(function () {
       busy = false;
       busyStage = "";
@@ -2325,10 +3084,10 @@
   }
 
   async function currentFileFingerprint(nativePath) {
-    var stat = await fs.lstat(nativePath);
+    var stat = await Transaction.lstatForIdentity(fs, nativePath);
     if (!stat || typeof stat.isFile !== "function" || !stat.isFile()) throw new Error("当前路径不是单个文件");
     var fingerprint = Transaction.fingerprintFromStat(stat);
-    if (!ScanPolicy.hasPortableFingerprint(fingerprint)) throw new Error("当前文件缺少可验证的修改时间，请稍后重试");
+    if (!Transaction.hasStrongFileIdentity(fingerprint)) throw new Error("当前文件缺少可靠的文件身份，请稍后重试");
     return fingerprint;
   }
 
@@ -2342,7 +3101,7 @@
       unavailable.cause = error;
       throw unavailable;
     }
-    if (!Transaction.samePortableFingerprint(expectedFingerprint, currentFingerprint)) {
+    if (!Transaction.sameStrongPathFingerprint(expectedFingerprint, currentFingerprint)) {
       var changed = new Error("恢复" + stage + "新位置文件已发生变化，已保留待检查记录，请人工检查");
       changed.code = "MATERIAL_BATCH_RECOVERY_TARGET_CHANGED";
       throw changed;
@@ -2367,7 +3126,7 @@
 
       if (action === "baseline-keep" || action === "baseline-move") {
         var fingerprint = await currentFileFingerprint(review.sourcePath);
-        if (!Transaction.samePortableFingerprint(review.sourceFingerprint, fingerprint)) {
+        if (!Transaction.sameStrongPathFingerprint(review.sourceFingerprint, fingerprint)) {
           throw new Error("文件在确认期间发生变化，请重新检查后再选择");
         }
         projectState = action === "baseline-keep"
@@ -2390,8 +3149,8 @@
       if (action === "mapping-confirm") {
         if (!review.mapping || !review.targetRelativePath || !review.targetPath) throw new Error("这条历史位置记录已失效");
         var targetFingerprint = await currentFileFingerprint(review.targetPath);
-        if (!ScanPolicy.hasPortableFingerprint(review.targetFingerprint)
-          || !Transaction.samePortableFingerprint(review.targetFingerprint, targetFingerprint)) {
+        if (!Transaction.hasStrongFileIdentity(review.targetFingerprint)
+          || !Transaction.sameStrongPathFingerprint(review.targetFingerprint, targetFingerprint)) {
           throw new Error("新位置文件在确认期间发生变化，请重新检查后再确认");
         }
         projectState = State.updateMappingTargetFingerprint(
@@ -2429,13 +3188,16 @@
     if (intent === "设置不搬动文件夹" || intent === "选择文件夹" || intent === "查看不搬动文件夹") return openSettingsPage();
     if (intent === "查看需处理素材" || intent === "查看待确认素材") return openReviewList();
     if (intent === "查看最近记录") return openActivityLog();
-    if (intent === "检查上次整理") return recoverPendingTransaction();
+    if (intent === "检查上次整理" || intent === "核对并继续" || intent === "检查文件和链接") return recoverPendingTransaction();
     return requestScan({ forceContext: true });
   }
 
   function bindUi() {
     window.addEventListener("batch-collector:refresh", function () { requestScan(); });
     window.addEventListener("batch-collector:open-batch", openCurrentBatch);
+    window.addEventListener("batch-collector:open-recovery-source", openRecoverySource);
+    window.addEventListener("batch-collector:open-recovery-target", openRecoveryTarget);
+    window.addEventListener("batch-collector:close-recovery-record", closeLegacyRecoveryRecord);
     window.addEventListener("batch-collector:handoff", handoffCurrentBatch);
     window.addEventListener("batch-collector:auto-collect", function (event) {
       setAutomatic(Boolean(event.detail && event.detail.enabled));

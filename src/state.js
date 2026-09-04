@@ -446,28 +446,262 @@
     return touch(next, at);
   }
 
+  function updatePendingTransaction(state, details, at) {
+    var next = clone(state);
+    if (!next.pendingTransaction) throw new Error("没有可以更新的文件移动事务");
+    var currentId = String(next.pendingTransaction.id || "");
+    var nextId = String(details && details.id || currentId);
+    if (currentId && nextId && currentId !== nextId) throw new Error("事务 ID 与待处理记录不一致");
+    next.pendingTransaction = Object.assign({}, next.pendingTransaction, clone(details || {}), {
+      id: currentId || nextId,
+      updatedAt: iso(at),
+    });
+    return touch(next, at);
+  }
+
+  function stableJsonValue(value) {
+    if (Array.isArray(value)) return value.map(stableJsonValue);
+    if (!isRecord(value)) return value;
+    return Object.keys(value).sort().reduce(function (result, key) {
+      result[key] = stableJsonValue(value[key]);
+      return result;
+    }, {});
+  }
+
+  function sameJsonValue(left, right) {
+    return JSON.stringify(stableJsonValue(left)) === JSON.stringify(stableJsonValue(right));
+  }
+
+  var TRANSACTION_IDENTITY_FIELDS = [
+    "sourcePath",
+    "targetPath",
+    "cleanupPath",
+    "targetRelativePath",
+    "sourceFingerprint",
+    "targetFingerprint",
+    "byteCount",
+    "batchIndex",
+    "mode",
+    "modeEvidence",
+    "targetMethod",
+    "projectPath",
+    "projectIdentity",
+    "deleteSource",
+    "itemCount",
+    "itemIds",
+    "itemSignatures",
+  ];
+
+  function hasOwn(object, key) {
+    return Boolean(object && Object.prototype.hasOwnProperty.call(object, key));
+  }
+
+  function decimalIdentity(value) {
+    if (typeof value === "number") {
+      if (!Number.isSafeInteger(value) || value <= 0) return null;
+      return String(value);
+    }
+    if (typeof value !== "string") return null;
+    var normalized = value.trim();
+    if (!/^\d+$/.test(normalized)) return null;
+    normalized = normalized.replace(/^0+(?=\d)/, "");
+    return normalized === "0" ? null : normalized;
+  }
+
+  function sameIdentityNumber(left, right) {
+    var leftValue = decimalIdentity(left);
+    var rightValue = decimalIdentity(right);
+    return leftValue !== null && rightValue !== null && leftValue === rightValue;
+  }
+
+  function hasUnsafeFingerprintIdentity(value) {
+    if (!isRecord(value)) return false;
+    return ["dev", "ino"].some(function (field) {
+      return hasOwn(value, field) && decimalIdentity(value[field]) === null;
+    });
+  }
+
+  function sameFingerprintValue(left, right, allowHardLinkCtimeChange) {
+    if (!isRecord(left) || !isRecord(right)) return sameJsonValue(left || {}, right || {});
+    var keys = Object.keys(left).concat(Object.keys(right)).filter(function (key, index, all) {
+      return all.indexOf(key) === index;
+    });
+    return keys.every(function (key) {
+      if (allowHardLinkCtimeChange && key === "ctimeMs") return true;
+      var leftHas = hasOwn(left, key);
+      var rightHas = hasOwn(right, key);
+      if (leftHas !== rightHas) return false;
+      if (!leftHas) return true;
+      if (key === "dev" || key === "ino") return sameIdentityNumber(left[key], right[key]);
+      return sameJsonValue(left[key], right[key]);
+    });
+  }
+
+  function sameTransactionIdentityField(field, left, right, allowHardLinkCtimeChange) {
+    if (field === "sourcePath" || field === "targetPath" || field === "cleanupPath" || field === "projectPath") {
+      return Core.samePath(String(left || ""), String(right || ""));
+    }
+    if (field === "targetRelativePath") return Core.sameRelativePath(String(left || ""), String(right || ""));
+    if (field === "sourceFingerprint" || field === "targetFingerprint") {
+      return sameFingerprintValue(left || {}, right || {}, allowHardLinkCtimeChange);
+    }
+    if (field === "modeEvidence" || field === "itemIds" || field === "itemSignatures") {
+      return sameJsonValue(left, right);
+    }
+    if (field === "byteCount" || field === "batchIndex" || field === "itemCount") {
+      return Number(left) === Number(right) && Number.isFinite(Number(left));
+    }
+    if (field === "deleteSource") return left === right;
+    return String(left || "") === String(right || "");
+  }
+
+  function transactionIdentityConflicts(pending, result) {
+    var conflicts = [];
+    function addConflict(field) {
+      if (conflicts.indexOf(field) < 0) conflicts.push(field);
+    }
+    ["sourceFingerprint", "targetFingerprint"].forEach(function (field) {
+      if ((hasOwn(pending, field) && hasUnsafeFingerprintIdentity(pending[field]))
+        || (hasOwn(result, field) && hasUnsafeFingerprintIdentity(result[field]))) addConflict(field);
+    });
+    TRANSACTION_IDENTITY_FIELDS.forEach(function (field) {
+      // 结果省略字段时，继续使用 pending 中已经持久化的身份。
+      if (!hasOwn(result, field) || result[field] === undefined || !hasOwn(pending, field)) return;
+      var allowHardLinkCtimeChange = field === "targetFingerprint"
+        && String(result.targetMethod !== undefined ? result.targetMethod : pending.targetMethod || "") === "link";
+      if (!sameTransactionIdentityField(field, pending[field], result[field], allowHardLinkCtimeChange)) {
+        addConflict(field);
+      }
+    });
+    return conflicts;
+  }
+
+  function mergeTransactionField(result, pending, field) {
+    return hasOwn(result, field) && result[field] !== undefined ? result[field] : pending[field];
+  }
+
+  function fingerprintKeyValue(fingerprint, field) {
+    if (!hasOwn(fingerprint, field)) return "<missing>";
+    if (field === "dev" || field === "ino") {
+      var identity = decimalIdentity(fingerprint[field]);
+      return identity === null
+        ? "<invalid:" + typeof fingerprint[field] + ":" + String(fingerprint[field]) + ">"
+        : identity;
+    }
+    var value = stableJsonValue(fingerprint[field]);
+    return JSON.stringify(value === undefined ? String(fingerprint[field]) : value);
+  }
+
+  function sourceFingerprintKey(fingerprint) {
+    fingerprint = isRecord(fingerprint) ? fingerprint : {};
+    return ["size", "mtimeMs", "ctimeMs", "birthtimeMs", "dev", "ino"]
+      .map(function (field) { return field + "=" + fingerprintKeyValue(fingerprint, field); })
+      .join(":");
+  }
+
+  function completedTransactionRecord(pending, result, currentBatchIndex, at) {
+    pending = pending || {};
+    result = result || {};
+    var itemIds = Array.isArray(mergeTransactionField(result, pending, "itemIds"))
+      ? mergeTransactionField(result, pending, "itemIds")
+      : [];
+    var itemSignatures = Array.isArray(mergeTransactionField(result, pending, "itemSignatures"))
+      ? mergeTransactionField(result, pending, "itemSignatures")
+      : [];
+    return {
+      identityVersion: 1,
+      id: String(result.id || pending.id || "").trim(),
+      at: iso(at),
+      status: "complete",
+      sourcePath: String(mergeTransactionField(result, pending, "sourcePath") || ""),
+      targetRelativePath: String(mergeTransactionField(result, pending, "targetRelativePath") || ""),
+      targetPath: String(mergeTransactionField(result, pending, "targetPath") || ""),
+      cleanupPath: String(mergeTransactionField(result, pending, "cleanupPath") || ""),
+      sourceFingerprint: clone(mergeTransactionField(result, pending, "sourceFingerprint") || {}),
+      targetFingerprint: clone(mergeTransactionField(result, pending, "targetFingerprint") || {}),
+      byteCount: Math.max(0, Number(mergeTransactionField(result, pending, "byteCount")) || 0),
+      batchIndex: Math.max(1, Math.floor(Number(mergeTransactionField(result, pending, "batchIndex")) || currentBatchIndex)),
+      mode: String(mergeTransactionField(result, pending, "mode") || ""),
+      targetMethod: String(mergeTransactionField(result, pending, "targetMethod") || ""),
+      modeEvidence: clone(mergeTransactionField(result, pending, "modeEvidence") || {}),
+      projectPath: String(mergeTransactionField(result, pending, "projectPath") || ""),
+      projectIdentity: String(mergeTransactionField(result, pending, "projectIdentity") || ""),
+      deleteSource: hasOwn(result, "deleteSource") && result.deleteSource !== undefined
+        ? result.deleteSource === true
+        : pending.deleteSource !== false,
+      itemCount: Math.max(0, Math.floor(Number(mergeTransactionField(result, pending, "itemCount")) || itemIds.length)),
+      itemIds: itemIds.map(function (itemId) { return String(itemId || ""); }),
+      itemSignatures: clone(itemSignatures),
+      sourceRetained: false,
+      sourceChanged: result.sourceChanged === true,
+      cleanupPending: false,
+    };
+  }
+
+  function sameCompletedTransaction(left, right) {
+    if (!left || !right || left.identityVersion !== 1 || right.identityVersion !== 1) return false;
+    return String(left.id || "") === String(right.id || "")
+      && Core.samePath(String(left.sourcePath || ""), String(right.sourcePath || ""))
+      && Core.sameRelativePath(String(left.targetRelativePath || ""), String(right.targetRelativePath || ""))
+      && Core.samePath(String(left.targetPath || ""), String(right.targetPath || ""))
+      && Core.samePath(String(left.cleanupPath || ""), String(right.cleanupPath || ""))
+      && Number(left.byteCount) === Number(right.byteCount)
+      && Number(left.batchIndex) === Number(right.batchIndex)
+      && String(left.mode || "") === String(right.mode || "")
+      && String(left.targetMethod || "") === String(right.targetMethod || "")
+      && String(left.projectIdentity || "") === String(right.projectIdentity || "")
+      && ((!left.projectPath && !right.projectPath)
+        || (left.projectPath && right.projectPath && Core.samePath(left.projectPath, right.projectPath)))
+      && left.deleteSource === right.deleteSource
+      && Number(left.itemCount) === Number(right.itemCount)
+      && sameFingerprintValue(left.sourceFingerprint || {}, right.sourceFingerprint || {}, false)
+      && sameFingerprintValue(left.targetFingerprint || {}, right.targetFingerprint || {}, String(left.targetMethod || "") === "link")
+      && sameJsonValue(left.modeEvidence || {}, right.modeEvidence || {})
+      && sameJsonValue(left.itemIds || [], right.itemIds || [])
+      && sameJsonValue(left.itemSignatures || [], right.itemSignatures || []);
+  }
+
   function commitTransaction(state, result, at) {
+    var activePendingId = String(state && state.pendingTransaction && state.pendingTransaction.id || "").trim();
+    var suppliedResultId = String(result && result.id || "").trim();
+    if (!suppliedResultId) throw new Error("提交结果缺少事务 ID");
+    if (state && state.pendingTransaction && !activePendingId) {
+      throw new Error("待处理记录缺少事务 ID");
+    }
+    if (activePendingId && activePendingId !== suppliedResultId) {
+      throw new Error("事务 ID 与待处理记录不一致");
+    }
+    if (!state || !state.pendingTransaction) {
+      var committed = state && Array.isArray(state.transactions)
+        ? state.transactions.find(function (transaction) { return transaction.id === suppliedResultId; })
+        : null;
+      var exactRepeat = committed && sameCompletedTransaction(
+        committed,
+        completedTransactionRecord({}, result, state.currentBatchIndex, at)
+      );
+      if (!exactRepeat) throw new Error("没有与提交结果匹配的待处理事务");
+      return clone(state);
+    }
+    var identityConflicts = transactionIdentityConflicts(state.pendingTransaction, result || {});
+    if (identityConflicts.length) {
+      var conflictState = clone(state);
+      conflictState.pendingTransaction.status = "conflict";
+      conflictState.pendingTransaction.error = "事务 ID 与待处理记录的不可变身份冲突（字段："
+        + identityConflicts.join("、") + "），未写入事务记录";
+      return touch(conflictState, at);
+    }
     if (result && result.cleanupPending === true) {
       return markCleanupPending(state, result.cleanupWarning || "原位置文件尚未删除", at);
     }
     var next = clone(state);
-    var pending = next.pendingTransaction || {};
-    var transactionId = String(result.id || pending.id || "");
+    var pending = next.pendingTransaction;
+    var transactionId = suppliedResultId;
     var previousTransaction = transactionId
       ? next.transactions.find(function (transaction) { return transaction.id === transactionId; })
       : null;
     if (previousTransaction) {
-      var repeatedSourcePath = String(result.sourcePath || pending.sourcePath || "");
-      var repeatedTargetPath = String(result.targetRelativePath || pending.targetRelativePath || "");
-      var repeatedBatchIndex = Math.max(1, Math.floor(Number(result.batchIndex || pending.batchIndex) || next.currentBatchIndex));
-      var repeatedProjectPath = String(result.projectPath || pending.projectPath || "");
-      var repeatedProjectIdentity = String(result.projectIdentity || pending.projectIdentity || "");
-      var sameProject = (!previousTransaction.projectPath || !repeatedProjectPath || Core.samePath(previousTransaction.projectPath, repeatedProjectPath))
-        && (!previousTransaction.projectIdentity || !repeatedProjectIdentity || previousTransaction.projectIdentity === repeatedProjectIdentity);
-      var sameTransaction = Core.samePath(previousTransaction.sourcePath, repeatedSourcePath)
-        && Core.sameRelativePath(previousTransaction.targetRelativePath, repeatedTargetPath)
-        && previousTransaction.batchIndex === repeatedBatchIndex
-        && sameProject;
+      var repeatedRecord = completedTransactionRecord(pending, result, next.currentBatchIndex, at);
+      var sameTransaction = sameCompletedTransaction(previousTransaction, repeatedRecord);
       if (sameTransaction) {
         next.pendingTransaction = null;
       } else if (next.pendingTransaction) {
@@ -476,26 +710,9 @@
       }
       return touch(next, at);
     }
-    var sourcePath = String(result.sourcePath || pending.sourcePath || "");
+    var record = completedTransactionRecord(pending, result, next.currentBatchIndex, at);
+    var sourcePath = record.sourcePath;
     var sourceKey = Core.normalizePathForComparison(sourcePath);
-    var record = {
-      id: transactionId,
-      at: iso(at),
-      status: "complete",
-      sourcePath: sourcePath,
-      targetRelativePath: String(result.targetRelativePath || pending.targetRelativePath || ""),
-      targetPath: String(result.targetPath || pending.targetPath || ""),
-      byteCount: Math.max(0, Number(result.byteCount || pending.byteCount) || 0),
-      batchIndex: Math.max(1, Math.floor(Number(result.batchIndex || pending.batchIndex) || next.currentBatchIndex)),
-      mode: String(result.mode || pending.mode || ""),
-      modeEvidence: clone(result.modeEvidence || pending.modeEvidence || {}),
-      projectPath: String(result.projectPath || pending.projectPath || ""),
-      projectIdentity: String(result.projectIdentity || pending.projectIdentity || ""),
-      sourceRetained: false,
-      sourceChanged: result.sourceChanged === true,
-      cleanupPending: false,
-      targetFingerprint: clone(result.targetFingerprint || pending.targetFingerprint || {}),
-    };
     next.transactions.push(record);
     next.transactions = next.transactions.slice(-TRANSACTION_LIMIT);
     var mapping = {
@@ -504,31 +721,17 @@
       byteCount: record.byteCount,
       batchIndex: record.batchIndex,
       movedAt: record.at,
-      sourceFingerprint: clone(result.sourceFingerprint || pending.sourceFingerprint || {}),
-      targetFingerprint: clone(result.targetFingerprint || pending.targetFingerprint || {}),
+      sourceFingerprint: clone(record.sourceFingerprint || {}),
+      targetFingerprint: clone(record.targetFingerprint || {}),
     };
     var existingMappings = Array.isArray(next.pathMappings[sourceKey])
       ? next.pathMappings[sourceKey]
       : next.pathMappings[sourceKey] ? [next.pathMappings[sourceKey]] : [];
-    var fingerprintKey = [
-      Number(mapping.sourceFingerprint.size) || 0,
-      Number(mapping.sourceFingerprint.mtimeMs) || 0,
-      Number(mapping.sourceFingerprint.ctimeMs) || 0,
-      Number(mapping.sourceFingerprint.birthtimeMs) || 0,
-      Number(mapping.sourceFingerprint.dev) || 0,
-      Number(mapping.sourceFingerprint.ino) || 0,
-    ].join(":");
+    var fingerprintKey = sourceFingerprintKey(mapping.sourceFingerprint);
     var replaced = false;
     existingMappings = existingMappings.map(function (existing) {
       var existingFingerprint = existing.sourceFingerprint || {};
-      var existingKey = [
-        Number(existingFingerprint.size) || 0,
-        Number(existingFingerprint.mtimeMs) || 0,
-        Number(existingFingerprint.ctimeMs) || 0,
-        Number(existingFingerprint.birthtimeMs) || 0,
-        Number(existingFingerprint.dev) || 0,
-        Number(existingFingerprint.ino) || 0,
-      ].join(":");
+      var existingKey = sourceFingerprintKey(existingFingerprint);
       if (existingKey === fingerprintKey) {
         replaced = true;
         return mapping;
@@ -584,6 +787,19 @@
     next.pendingProjectSave = Object.assign({}, clone(details || {}), {
       status: "pending",
       startedAt: iso(at),
+    });
+    return touch(next, at);
+  }
+
+  function updatePendingProjectSave(state, details, at) {
+    var next = clone(state);
+    if (!next.pendingProjectSave) throw new Error("没有可以更新的 Premiere 工程保存记录");
+    var currentId = String(next.pendingProjectSave.id || "");
+    var nextId = String(details && details.id || currentId);
+    if (currentId && nextId && currentId !== nextId) throw new Error("保存记录 ID 与待处理记录不一致");
+    next.pendingProjectSave = Object.assign({}, next.pendingProjectSave, clone(details || {}), {
+      id: currentId || nextId,
+      updatedAt: iso(at),
     });
     return touch(next, at);
   }
@@ -691,6 +907,8 @@
     removeProtectedLibrary: removeProtectedLibrary,
     setProjectBaselineEntry: setProjectBaselineEntry,
     updateMappingTargetFingerprint: updateMappingTargetFingerprint,
+    updatePendingTransaction: updatePendingTransaction,
+    updatePendingProjectSave: updatePendingProjectSave,
     clearPendingTransaction: clearPendingTransaction,
     clearPendingProjectSave: clearPendingProjectSave,
     failProjectSave: failProjectSave,

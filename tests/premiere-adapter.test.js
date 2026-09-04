@@ -23,6 +23,30 @@ test("Premiere 素材清单不完整时无法通过扫描安全门槛", async ()
   );
 });
 
+test("重复项目项 ID 会产生警告并阻止整理，同时避免分箱递归死循环", async () => {
+  const cyclicFolder = {
+    name: "循环分箱",
+    getId: () => "folder-1",
+    getItems: async () => [cyclicFolder],
+  };
+  const root = { getItems: async () => [cyclicFolder] };
+  const ppro = {
+    FolderItem: { cast: (item) => item === cyclicFolder ? item : null },
+    ClipProjectItem: { cast: () => null },
+  };
+
+  const inventory = await Premiere.inventoryProject(ppro, { getRootItem: async () => root });
+
+  assert.equal(inventory.entries.length, 0);
+  assert.equal(inventory.warnings.length, 1);
+  assert.match(inventory.warnings[0], /重复的 Premiere 项目项 ID folder-1/);
+  assert.match(inventory.warnings[0], /循环分箱/);
+  assert.throws(
+    () => Premiere.assertCompleteInventory(inventory),
+    (error) => error.code === "MATERIAL_BATCH_INVENTORY_INCOMPLETE" && error.warningCount === 1,
+  );
+});
+
 test("同一规范化工程路径会生成稳定的工程身份", () => {
   const first = Premiere.projectIdentity({
     guid: { toString: () => "same-guid" },

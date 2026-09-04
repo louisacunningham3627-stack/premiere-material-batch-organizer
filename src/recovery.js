@@ -17,16 +17,18 @@
     return Object.assign({ kind: "manual", reason: reason }, details || {});
   }
 
-  function hasFingerprint(value) {
-    return Boolean(value && typeof value === "object" && Object.keys(value).length);
-  }
-
   async function inspectPending(options) {
     var pending = options.pending || {};
     var sourcePath = String(pending.sourcePath || "");
     var targetPath = String(options.targetPath || "");
     var mediaRoot = String(options.mediaRoot || "");
-    var linkedEntries = Array.isArray(options.linkedEntries) ? options.linkedEntries : [];
+    var linkedEntries = (Array.isArray(options.linkedEntries) ? options.linkedEntries : []).map(function (entry) {
+      return {
+        itemId: String(entry && entry.itemId || ""),
+        itemName: String(entry && entry.itemName || ""),
+        mediaPath: String(entry && entry.mediaPath || ""),
+      };
+    });
     var expectedItemIds = Array.isArray(pending.itemIds) ? pending.itemIds.map(String).filter(Boolean) : [];
     var expectedItemCount = Math.max(1, Math.floor(Number(pending.itemCount) || 1));
 
@@ -59,68 +61,116 @@
       || new Set(expectedItemIds).size !== expectedItemIds.length) {
       return manual("事务缺少完整的素材项身份，或身份存在重复，不能自动恢复");
     }
+    if (!Transaction.hasStrongFileIdentity(pending.sourceFingerprint)) {
+      return manual("事务缺少可核对的原位置文件身份，不能自动恢复");
+    }
     var entryById = {};
+    var duplicateCurrentItemIds = [];
     linkedEntries.forEach(function (entry) {
-      if (entry && entry.itemId) entryById[String(entry.itemId)] = String(entry.mediaPath || "");
+      if (!entry.itemId) return;
+      if (entryById[entry.itemId]) duplicateCurrentItemIds.push(entry.itemId);
+      entryById[entry.itemId] = entry;
     });
+    if (duplicateCurrentItemIds.length) {
+      return manual("当前工程包含重复的素材项身份，不能自动恢复", {
+        sourcePath: sourcePath,
+        targetPath: targetPath,
+        duplicateCurrentItemIds: duplicateCurrentItemIds,
+      });
+    }
     var missingItemIds = expectedItemIds.filter(function (itemId) { return !entryById[itemId]; });
-    var sourceLinkCount = expectedItemIds.filter(function (itemId) { return Core.samePath(entryById[itemId], sourcePath); }).length;
-    var targetLinkCount = expectedItemIds.filter(function (itemId) { return Core.samePath(entryById[itemId], targetPath); }).length;
+    var candidateEntries = linkedEntries.filter(function (entry) {
+      return entry.itemId && (Core.samePath(entry.mediaPath, sourcePath) || Core.samePath(entry.mediaPath, targetPath));
+    });
+    var candidateIds = candidateEntries.map(function (entry) { return entry.itemId; });
+    var candidatesAreUnique = candidateIds.length === new Set(candidateIds).size;
+    var rebuiltIdentity = missingItemIds.length === expectedItemIds.length
+      && candidateEntries.length === expectedItemCount
+      && candidatesAreUnique;
+    var resolvedEntries = missingItemIds.length === 0
+      ? expectedItemIds.map(function (itemId) { return entryById[itemId]; })
+      : rebuiltIdentity ? candidateEntries : [];
+    var sourceLinkCount = resolvedEntries.filter(function (entry) { return Core.samePath(entry.mediaPath, sourcePath); }).length;
+    var targetLinkCount = resolvedEntries.filter(function (entry) { return Core.samePath(entry.mediaPath, targetPath); }).length;
     var sourceChanged = false;
+    var currentSourceFingerprint = null;
+    var currentTargetFingerprint = null;
+    var targetCheckpointMatch = "none";
 
-    if (sourceExists && hasFingerprint(pending.sourceFingerprint)) {
-      var currentSourceFingerprint = Transaction.fingerprintFromStat(await options.fs.lstat(sourcePath));
-      sourceChanged = !Transaction.sameFingerprint(pending.sourceFingerprint, currentSourceFingerprint);
+    if (sourceExists) {
+      currentSourceFingerprint = Transaction.fingerprintFromStat(await Transaction.lstatForIdentity(options.fs, sourcePath));
+      if (!Transaction.hasStrongFileIdentity(currentSourceFingerprint)) {
+        return manual("无法取得原位置文件的可靠身份，不能自动恢复", {
+          sourcePath: sourcePath,
+          targetPath: targetPath,
+          sourceExists: true,
+          targetExists: targetExists,
+          stagingExists: stagingExists,
+          cleanupExists: cleanupExists,
+          cleanupPath: cleanupPath,
+          sourceLinkCount: sourceLinkCount,
+          targetLinkCount: targetLinkCount,
+        });
+      }
+      sourceChanged = !Transaction.sameStrongPathFingerprint(pending.sourceFingerprint, currentSourceFingerprint);
       if (sourceChanged && String(pending.mode || "") === "rename") {
         sourceChanged = !Transaction.sameFileAfterRename(pending.sourceFingerprint, currentSourceFingerprint);
       }
     }
-    if (cleanupExists && (
-      !hasFingerprint(pending.sourceFingerprint)
-      || !Transaction.sameFileAfterRename(
-        pending.sourceFingerprint,
-        Transaction.fingerprintFromStat(await options.fs.lstat(cleanupPath))
-      )
-    )) {
-      return manual("待删除文件的身份与事务记录不一致，未执行恢复", {
-        sourceExists: sourceExists,
-        targetExists: targetExists,
-        stagingExists: stagingExists,
-        cleanupExists: true,
-        cleanupPath: cleanupPath,
-      });
+    if (cleanupExists) {
+      var currentCleanupFingerprint = Transaction.fingerprintFromStat(
+        await Transaction.lstatForIdentity(options.fs, cleanupPath)
+      );
+      if (!Transaction.hasStrongFileIdentity(currentCleanupFingerprint)
+        || !Transaction.sameFileAfterRename(pending.sourceFingerprint, currentCleanupFingerprint)) {
+        return manual("待删除文件的身份与事务记录不一致，未执行恢复", {
+          sourcePath: sourcePath,
+          targetPath: targetPath,
+          sourceExists: sourceExists,
+          targetExists: targetExists,
+          stagingExists: stagingExists,
+          cleanupExists: true,
+          cleanupPath: cleanupPath,
+          sourceLinkCount: sourceLinkCount,
+          targetLinkCount: targetLinkCount,
+        });
+      }
     }
 
+    var targetProblem = "";
+    var targetProblemCode = "";
     if (targetExists) {
-      var targetStat = await options.fs.lstat(targetPath);
-      var currentTargetFingerprint = Transaction.fingerprintFromStat(targetStat);
-      if (hasFingerprint(pending.targetFingerprint)
-        && !Transaction.samePortableFingerprint(pending.targetFingerprint, currentTargetFingerprint)) {
-        return manual("目标文件与事务记录的身份不一致，未自动恢复", {
-          sourceExists: sourceExists,
-          targetExists: true,
-          stagingExists: stagingExists,
-        });
+      var targetStat = await Transaction.lstatForIdentity(options.fs, targetPath);
+      currentTargetFingerprint = Transaction.fingerprintFromStat(targetStat);
+      var hasTargetCheckpoint = Transaction.hasStrongFileIdentity(pending.targetFingerprint);
+      var strictTargetMatch = hasTargetCheckpoint
+        && Transaction.sameStrongPathFingerprint(pending.targetFingerprint, currentTargetFingerprint);
+      var hardLinkTargetMatch = hasTargetCheckpoint
+        && pending.targetMethod === "link"
+        && (cleanupExists || !sourceExists || sourceChanged)
+        && Transaction.sameHardLinkRecoveryFingerprint(pending.targetFingerprint, currentTargetFingerprint);
+      if (!targetStat || typeof targetStat.isFile !== "function" || !targetStat.isFile()) {
+        targetProblem = "新位置不是单个文件，未自动恢复";
+        targetProblemCode = "target-not-file";
+      } else if (!hasTargetCheckpoint) {
+        targetProblem = "事务缺少可靠的新位置文件身份，无法确认当前目标文件，未自动恢复";
+        targetProblemCode = "missing-target-checkpoint";
+      } else if (!strictTargetMatch && !hardLinkTargetMatch) {
+        targetProblem = "目标文件与事务记录的身份不一致，未自动恢复";
+        targetProblemCode = "target-identity-mismatch";
       }
-      if (Object.prototype.hasOwnProperty.call(pending, "byteCount") && Transaction.statSize(targetStat) !== Math.max(0, Number(pending.byteCount) || 0)) {
-        return manual("目标文件大小与事务记录不一致，已保留两处文件", {
-          sourceExists: sourceExists,
-          targetExists: true,
-          stagingExists: stagingExists,
-        });
-      }
-      var expectedMtime = Number(pending.sourceFingerprint && pending.sourceFingerprint.mtimeMs) || 0;
-      var targetMtime = Transaction.statMtime(targetStat);
-      if (expectedMtime && targetMtime && Math.abs(expectedMtime - targetMtime) > 2000) {
-        return manual("目标文件时间与事务记录不一致，未自动恢复", {
-          sourceExists: sourceExists,
-          targetExists: true,
-          stagingExists: stagingExists,
-        });
+      if (hasTargetCheckpoint) targetCheckpointMatch = strictTargetMatch ? "strict" : "hard-link";
+      if (!targetProblem
+        && Object.prototype.hasOwnProperty.call(pending, "byteCount")
+        && Transaction.statSize(targetStat) !== Math.max(0, Number(pending.byteCount) || 0)) {
+        targetProblem = "目标文件大小与事务记录不一致，已保留两处文件";
+        targetProblemCode = "target-size-mismatch";
       }
     }
 
     var details = {
+      sourcePath: sourcePath,
+      targetPath: targetPath,
       sourceExists: sourceExists,
       targetExists: targetExists,
       stagingExists: stagingExists,
@@ -128,12 +178,49 @@
       cleanupPath: cleanupPath,
       remainingSourcePath: cleanupExists ? cleanupPath : sourceExists && !sourceChanged ? sourcePath : "",
       sourceChanged: sourceChanged,
+      sourceFingerprint: currentSourceFingerprint,
+      targetFingerprint: currentTargetFingerprint,
+      targetCheckpointMatch: targetCheckpointMatch,
+      sourceSize: currentSourceFingerprint ? Transaction.statSize(currentSourceFingerprint) : 0,
+      targetSize: currentTargetFingerprint ? Transaction.statSize(currentTargetFingerprint) : 0,
       sourceLinkCount: sourceLinkCount,
       targetLinkCount: targetLinkCount,
       missingItemIds: missingItemIds,
+      candidateEntries: rebuiltIdentity ? candidateEntries : [],
+      resolvedItemIds: resolvedEntries.map(function (entry) { return entry.itemId; }),
+      requiresCandidateConfirmation: rebuiltIdentity,
+      currentLinkState: sourceLinkCount === expectedItemCount
+        ? "source"
+        : targetLinkCount === expectedItemCount
+          ? "target"
+          : sourceLinkCount + targetLinkCount === expectedItemCount && resolvedEntries.length === expectedItemCount
+            ? "mixed"
+            : "unknown",
     };
 
+    if (targetProblem) {
+      return manual(targetProblem, Object.assign({ manualCode: targetProblemCode }, details));
+    }
+
     if (stagingExists) return manual("发现未完成的临时副本，需要人工检查", details);
+    if (missingItemIds.length && !rebuiltIdentity) {
+      return manual("当前工程中的旧素材项身份已经失效，且无法得到唯一候选，未自动恢复", details);
+    }
+    if (sourceChanged && sourceLinkCount > 0) {
+      return manual("原位置文件已经变化，不能确认当前素材项仍是上次整理的文件", details);
+    }
+    if (targetExists
+      && resolvedEntries.length === expectedItemCount
+      && sourceLinkCount + targetLinkCount === expectedItemCount
+      && (rebuiltIdentity || sourceLinkCount > 0)) {
+      return Object.assign({
+        kind: "confirmation-required",
+        reason: rebuiltIdentity
+          ? "Premiere 重启后素材项身份已变化，已找到唯一候选；继续前需要你确认"
+          : "原位置和新位置都已找到；继续前需要你确认更新 Premiere 链接",
+        requiresCandidateConfirmation: rebuiltIdentity,
+      }, details);
+    }
     if (targetExists && !missingItemIds.length && targetLinkCount === expectedItemIds.length && sourceLinkCount === 0) {
       return Object.assign({
         kind: "completed",

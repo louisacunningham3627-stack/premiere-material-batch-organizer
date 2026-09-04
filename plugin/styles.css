@@ -87,6 +87,23 @@ button:focus-visible, input:focus-visible { outline: none; box-shadow: var(--foc
 .state-strip[data-kind="onboarding"] .state-action:hover { border-color: var(--amber-300); background: var(--amber-300); }
 .state-strip[data-kind="danger"] .state-action { border-color: var(--amber-500); background: var(--amber-500); color: #17130b; }
 .state-strip[data-kind="danger"] .state-action:hover { border-color: var(--amber-300); background: var(--amber-300); }
+.recovery-details { min-width: 0; margin-top: 12px; padding-top: 11px; border-top: 1px solid rgba(224,122,115,.25); }
+.recovery-file { display: flex; align-items: baseline; min-width: 0; flex-wrap: wrap; padding-bottom: 9px; }
+.recovery-label { display: block; width: 100%; margin-bottom: 3px; color: var(--text-tertiary); font-size: 10px; line-height: 1.3; }
+.recovery-file strong { min-width: 0; flex: 1 1 auto; overflow-wrap: anywhere; color: var(--text-primary); font-size: 12px; font-weight: 650; line-height: 1.4; }
+.recovery-size { flex: 0 0 auto; margin-left: 8px; color: var(--amber-300); font-size: 10px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.recovery-path-block { min-width: 0; padding: 9px 0; border-top: 1px solid var(--border-subtle); }
+.recovery-path-block code { display: block; max-width: 100%; margin-top: 3px; overflow-wrap: anywhere; word-break: break-word; color: var(--text-secondary); font: 10px/1.45 "Cascadia Mono", Consolas, monospace; white-space: normal; }
+.recovery-checks { min-width: 0; border-top: 1px solid var(--border-subtle); }
+.recovery-check-row { display: flex; align-items: baseline; min-width: 0; padding: 6px 0; }
+.recovery-check-row + .recovery-check-row { border-top: 1px solid var(--border-subtle); }
+.recovery-check-row span { flex: 0 0 104px; color: var(--text-tertiary); font-size: 10px; line-height: 1.4; }
+.recovery-check-row strong { min-width: 0; flex: 1 1 auto; overflow-wrap: anywhere; color: var(--text-secondary); font-size: 10px; font-weight: 600; line-height: 1.4; text-align: right; }
+.recovery-explanation { padding-top: 9px; border-top: 1px solid var(--border-subtle); color: var(--text-tertiary); font-size: 10px; line-height: 1.5; }
+.recovery-location-actions { display: flex; gap: 7px; margin-top: 7px; }
+.recovery-location-actions .recovery-open { flex: 1 1 0; min-height: 34px; padding: 6px 5px; font-size: 11px; white-space: normal; }
+.recovery-close { min-height: 34px; margin-top: 7px; padding: 7px 8px; border-color: rgba(224,122,115,.26); color: var(--text-secondary); white-space: normal; }
+.recovery-details[hidden], .recovery-location-actions[hidden], .recovery-open[hidden], .recovery-close[hidden] { display: none !important; }
 
 .review-section { margin: -7px 0 20px; padding: 0 0 2px; border-top: 1px solid rgba(224,122,115,.38); border-bottom: 1px solid var(--border-subtle); }
 .review-heading { justify-content: space-between; padding: 12px 0 4px; }
@@ -111,6 +128,8 @@ button:focus-visible, input:focus-visible { outline: none; box-shadow: var(--foc
 .destination-path { display: block; min-height: 58px; padding: 10px 11px; border: 1px solid var(--border-strong); border-radius: var(--radius-control); background: var(--surface-raised); }
 .destination-path span { display: block; margin-bottom: 3px; color: var(--text-tertiary); font-size: 10px; line-height: 1.3; }
 .destination-path code { display: block; overflow: hidden; color: var(--text-primary); font: 600 12px/1.4 "Cascadia Mono", Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.batch-legacy-note { margin-top: 7px; color: var(--text-tertiary); font-size: 10px; line-height: 1.45; }
+.batch-legacy-note[hidden] { display: none !important; }
 .batch-summary { margin-top: 8px; color: var(--text-tertiary); font-size: 11px; line-height: 1.4; }
 .batch-summary strong { color: var(--text-secondary); font-weight: 650; font-variant-numeric: tabular-nums; }
 .batch-rail { display: none; height: 2px; margin: -2px 2px 0; overflow: hidden; background: var(--ink-700); }
@@ -228,6 +247,14 @@ body[data-state="unsaved"] .batch-section,
 body[data-state="unsaved"] .action-section,
 body[data-state="unsaved"] .protection-summary,
 body[data-state="unsaved"] .activity-section { display: none; }
+
+body[data-recovery="true"] #autoCollectControl,
+body[data-recovery="true"] .batch-section,
+body[data-recovery="true"] .action-section,
+body[data-recovery="true"] .protection-summary,
+body[data-recovery="true"] .activity-section,
+body[data-recovery="true"] .review-section { display: none; }
+body[data-recovery="true"] .state-strip { margin-bottom: 10px; }
 @media (max-width: 320px) {
   .panel { padding-inline: 13px; }
   .context-meta { display: none; }

@@ -54,7 +54,7 @@ test("设置操作会在当前页反馈，缺少工程或忙碌时不会静默�
   assert.match(source, /请先打开并保存 Premiere 工程，才能设置这份名单/);
   assert.match(source, /素材正在整理，完成后才能修改名单/);
   assert.match(source, /projectState\.pendingTransaction \|\| projectState\.pendingProjectSave/);
-  assert.match(source, /请先完成“检查上次整理”，再修改不搬动文件夹/);
+  assert.match(source, /请先完成“检查文件和链接”，再修改不搬动文件夹/);
   assert.match(source, /同一工程文件夹内的所有工程已暂停，请分别确认名单后再开启/);
   assert.match(source, /setSettingsMessage\("error", panelError\)/);
   assert.match(source, /var initialBlockReason = protectedSettingsBlockReason\(\)/);
@@ -126,6 +126,18 @@ test("主页用文字说明当前工程、整理开关、交接文件夹和重�
   assert.match(html, /id="batchHeading">当前交接文件夹<\/h2>/);
   assert.match(html, /<div class="destination-path"[^>]*>[\s\S]*?<span>磁盘位置<\/span>/);
   assert.match(html, /id="refreshButton"[^>]*>重新检查<\/button>/);
+});
+
+test("已整理统计不再暗示打开旧工程后还会重新归集", () => {
+  assert.match(html, /class="batch-summary">已完成整理/);
+  assert.doesNotMatch(html, /目前已有/);
+  assert.match(html, /id="batchLegacyNote"[^>]*hidden>这是旧版已存在的文件夹，名称不会自动修改。<\/p>/);
+  assert.match(source, /var batchLegacyNote = element\("batchLegacyNote"\)/);
+  assert.match(source, /var legacyBatchName = batch && \/\^\\d\{3\}_\/\.test\(String\(batch\.name \|\| ""\)\) \? String\(batch\.name\) : "";/);
+  assert.match(source, /batchLegacyNote\.hidden = !legacyBatchName;/);
+  assert.match(source, /batchLegacyNote\.textContent = legacyBatchName[\s\S]*?是旧版已经创建的文件夹，本次不会改名。/);
+  assert.match(styles, /\.batch-legacy-note\s*\{[^}]*color:\s*var\(--text-tertiary\);/s);
+  assert.match(styles, /\.batch-legacy-note\[hidden\]\s*\{[^}]*display:\s*none\s*!important;/s);
 });
 
 test("首次使用先确认不搬动文件夹，再允许开启自动整理", () => {

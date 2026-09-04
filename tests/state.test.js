@@ -110,6 +110,160 @@ test("提交事务会记录路径映射和批次总计", () => {
   assert.equal(state.transactions[0].modeEvidence.proven, false);
 });
 
+test("首次提交的显式事务身份冲突只会保留 pending", () => {
+  const base = {
+    id: "tx-first-identity",
+    sourcePath: "C:\\Downloads\\identity.mp4",
+    targetPath: "I:\\项目\\素材\\2026年09月02日添加素材\\identity.mp4",
+    cleanupPath: "C:\\Downloads\\identity.mp4.pending-delete",
+    targetRelativePath: "素材\\2026年09月02日添加素材\\identity.mp4",
+    sourceFingerprint: { size: 100, mtimeMs: 10, ctimeMs: 20, dev: 3, ino: 7 },
+    targetFingerprint: { size: 100, mtimeMs: 30, ctimeMs: 40, dev: 4, ino: 8 },
+    byteCount: 100,
+    batchIndex: 1,
+    mode: "copy",
+    modeEvidence: { mode: "copy", proven: false },
+    targetMethod: "rename",
+    projectPath: "I:\\项目\\剪辑.prproj",
+    projectIdentity: "path|i:\\项目\\剪辑.prproj",
+    deleteSource: true,
+    itemCount: 1,
+    itemIds: ["clip-1"],
+    itemSignatures: [{ itemId: "clip-1", itemName: "identity.mp4", mediaPath: "C:\\Downloads\\identity.mp4" }],
+  };
+  const changes = {
+    sourcePath: "C:\\Downloads\\other.mp4",
+    targetPath: "I:\\项目\\素材\\2026年09月02日添加素材\\other.mp4",
+    cleanupPath: "C:\\Downloads\\other.mp4.pending-delete",
+    targetRelativePath: "素材\\2026年09月02日添加素材\\other.mp4",
+    sourceFingerprint: { ...base.sourceFingerprint, ino: 70 },
+    targetFingerprint: { ...base.targetFingerprint, ino: 80 },
+    byteCount: 101,
+    batchIndex: 2,
+    mode: "rename",
+    modeEvidence: { mode: "rename", proven: true },
+    targetMethod: "link",
+    projectPath: "I:\\项目\\另一个.prproj",
+    projectIdentity: "path|i:\\项目\\另一个.prproj",
+    deleteSource: false,
+    itemCount: 2,
+    itemIds: ["clip-2"],
+    itemSignatures: [{ itemId: "clip-2", itemName: "other.mp4", mediaPath: "C:\\Downloads\\other.mp4" }],
+  };
+
+  for (const field of Object.keys(changes)) {
+    let state = State.createState("I:\\项目", now);
+    state = State.beginTransaction(state, base, now);
+    state = State.commitTransaction(state, { id: base.id, [field]: changes[field] }, now);
+
+    assert.equal(state.transactions.length, 0, field);
+    assert.equal(state.batches[0].fileCount, 0, field);
+    assert.equal(state.pendingTransaction.status, "conflict", field);
+    assert.equal(state.pendingTransaction[field] !== undefined, true, field);
+    assert.match(state.pendingTransaction.error, new RegExp(field), field);
+  }
+});
+
+test("首次提交拒绝以不安全 Number 参与源文件强身份", () => {
+  for (const field of ["dev", "ino"]) {
+    const transaction = {
+      id: "tx-unsafe-" + field,
+      sourcePath: "C:\\Downloads\\unsafe.mp4",
+      targetPath: "I:\\项目\\素材\\unsafe.mp4",
+      targetRelativePath: "素材\\unsafe.mp4",
+      sourceFingerprint: { size: 100, mtimeMs: 10, dev: 3, ino: 7 },
+      byteCount: 100,
+      batchIndex: 1,
+    };
+    transaction.sourceFingerprint[field] = 9007199254740992;
+    let state = State.createState("I:\\项目", now);
+    state = State.beginTransaction(state, transaction, now);
+    state = State.commitTransaction(state, {
+      id: transaction.id,
+      sourceFingerprint: { ...transaction.sourceFingerprint },
+    }, now);
+
+    assert.equal(state.transactions.length, 0, field);
+    assert.equal(state.pendingTransaction.status, "conflict", field);
+    assert.match(state.pendingTransaction.error, /sourceFingerprint/);
+  }
+});
+
+test("首次提交拒绝 dev 或 ino 为零的无效强身份", () => {
+  for (const field of ["dev", "ino"]) {
+    for (const invalidValue of [0, "0", "0000"]) {
+      const transaction = {
+        id: "tx-zero-" + field + "-" + String(invalidValue),
+        sourcePath: "C:\\Downloads\\zero.mp4",
+        targetPath: "I:\\项目\\素材\\zero.mp4",
+        targetRelativePath: "素材\\zero.mp4",
+        sourceFingerprint: { size: 100, mtimeMs: 10, dev: 3, ino: 7 },
+        byteCount: 100,
+        batchIndex: 1,
+      };
+      transaction.sourceFingerprint[field] = invalidValue;
+      let state = State.createState("I:\\项目", now);
+      state = State.beginTransaction(state, transaction, now);
+      state = State.commitTransaction(state, { id: transaction.id }, now);
+
+      assert.equal(state.transactions.length, 0, field + "=" + invalidValue);
+      assert.equal(state.pendingTransaction.status, "conflict", field + "=" + invalidValue);
+      assert.match(state.pendingTransaction.error, /sourceFingerprint/);
+    }
+  }
+});
+
+test("相邻的超安全整数 inode 不会让同一路径映射互相覆盖", () => {
+  const sourcePath = "C:\\Downloads\\large-inode.mp4";
+  const inodeValues = ["9007199254740992", "9007199254740993"];
+  let state = State.createState("I:\\项目", now);
+
+  inodeValues.forEach((ino, index) => {
+    state = State.beginTransaction(state, {
+      id: "tx-large-inode-" + index,
+      sourcePath,
+      targetPath: "I:\\项目\\素材\\large-inode-" + index + ".mp4",
+      targetRelativePath: "素材\\large-inode-" + index + ".mp4",
+      sourceFingerprint: { size: 100, mtimeMs: 10, dev: "9007199254740991", ino },
+      byteCount: 100,
+      batchIndex: 1,
+    }, now);
+    state = State.commitTransaction(state, { id: "tx-large-inode-" + index }, now);
+  });
+
+  assert.equal(state.pathMappings["c:\\downloads\\large-inode.mp4"].length, 2);
+  assert.deepEqual(
+    state.pathMappings["c:\\downloads\\large-inode.mp4"].map((mapping) => mapping.sourceFingerprint.ino),
+    inodeValues,
+  );
+});
+
+test("硬链接目标删除源链接后允许 ctime 变化但不允许强身份变化", () => {
+  const transaction = {
+    id: "tx-hard-link-ctime",
+    sourcePath: "C:\\Downloads\\linked.mp4",
+    targetPath: "I:\\项目\\素材\\linked.mp4",
+    targetRelativePath: "素材\\linked.mp4",
+    targetFingerprint: { size: 100, mtimeMs: 30, ctimeMs: 40, dev: 4, ino: 8 },
+    byteCount: 100,
+    batchIndex: 1,
+    mode: "rename",
+    targetMethod: "link",
+  };
+  let state = State.createState("I:\\项目", now);
+  state = State.beginTransaction(state, transaction, now);
+  state = State.commitTransaction(state, {
+    id: transaction.id,
+    targetFingerprint: { ...transaction.targetFingerprint, ctimeMs: 999 },
+    sourceChanged: true,
+  }, now);
+
+  assert.equal(state.pendingTransaction, null);
+  assert.equal(state.transactions.length, 1);
+  assert.equal(state.transactions[0].targetFingerprint.ctimeMs, 999);
+  assert.equal(state.transactions[0].sourceChanged, true);
+});
+
 test("旧路径被替换时会记录 sourceChanged，且不会声称源文件仍被保留", () => {
   let state = State.createState("I:\\项目", now);
   state = State.beginTransaction(state, {
@@ -154,6 +308,51 @@ test("cleanup-pending 状态不会提交事务或递增交接文件夹", () => {
   assert.equal(state.batches[0].fileCount, 0);
   const hydrated = State.hydrateState(state, "I:\\项目", now);
   assert.equal(hydrated.pendingTransaction.status, "cleanup-pending");
+});
+
+test("确认恢复候选只更新同一条待处理文件事务", () => {
+  const updatedAt = new Date("2026-09-02T02:05:00.000Z");
+  let state = State.createState("I:\\项目", now);
+  state = State.beginTransaction(state, {
+    id: "tx-recovery",
+    sourcePath: "C:\\Downloads\\clip.mp4",
+    targetRelativePath: "素材\\001_初始素材\\clip.mp4",
+    itemIds: ["old-item"],
+    itemCount: 1,
+    statusNote: "keep-me",
+  }, now);
+  const original = state;
+  const details = {
+    id: "tx-recovery",
+    itemIds: ["new-item"],
+    itemCount: 1,
+    itemSignatures: [{ itemId: "new-item", itemName: "clip.mp4", mediaPath: "C:\\Downloads\\clip.mp4" }],
+  };
+
+  const updated = State.updatePendingTransaction(state, details, updatedAt);
+
+  assert.deepEqual(original.pendingTransaction.itemIds, ["old-item"]);
+  assert.deepEqual(updated.pendingTransaction.itemIds, ["new-item"]);
+  assert.equal(updated.pendingTransaction.id, "tx-recovery");
+  assert.equal(updated.pendingTransaction.sourcePath, "C:\\Downloads\\clip.mp4");
+  assert.equal(updated.pendingTransaction.targetRelativePath, "素材\\001_初始素材\\clip.mp4");
+  assert.equal(updated.pendingTransaction.statusNote, "keep-me");
+  assert.equal(updated.pendingTransaction.status, "running");
+  assert.equal(updated.pendingTransaction.updatedAt, updatedAt.toISOString());
+  assert.equal(updated.updatedAt, updatedAt.toISOString());
+
+  details.itemIds[0] = "mutated-after-update";
+  details.itemSignatures[0].itemId = "mutated-after-update";
+  assert.deepEqual(updated.pendingTransaction.itemIds, ["new-item"]);
+  assert.equal(updated.pendingTransaction.itemSignatures[0].itemId, "new-item");
+  assert.throws(
+    () => State.updatePendingTransaction(state, { id: "another-transaction", itemIds: ["other"] }, updatedAt),
+    /事务 ID 与待处理记录不一致/,
+  );
+  assert.throws(
+    () => State.updatePendingTransaction(State.createState("I:\\项目", now), { id: "tx-recovery" }, updatedAt),
+    /没有可以更新的文件移动事务/,
+  );
 });
 
 test("同一源路径会为不同文件保留独立映射", () => {
@@ -205,8 +404,12 @@ test("重复提交同一事务不会重复计入批次总数", () => {
   state = State.beginTransaction(state, {
     id: "tx-idempotent",
     sourcePath: "C:\\Downloads\\only-once.mp4",
+    targetPath: "I:\\项目\\素材\\001_初始素材\\only-once.mp4",
     targetRelativePath: "素材\\001_初始素材\\only-once.mp4",
+    sourceFingerprint: { size: 512, mtimeMs: 10, ctimeMs: 20 },
+    byteCount: 512,
     batchIndex: 1,
+    mode: "copy",
   }, now);
   state = State.commitTransaction(state, result, now);
 
@@ -214,6 +417,90 @@ test("重复提交同一事务不会重复计入批次总数", () => {
   assert.equal(state.batches[0].fileCount, 1);
   assert.equal(state.batches[0].byteCount, 512);
   assert.equal(state.pendingTransaction, null);
+});
+
+test("提交事务 ID 与待处理记录不一致时直接抛错且不修改输入", () => {
+  let state = State.createState("I:\\项目", now);
+  state = State.beginTransaction(state, {
+    id: "tx-current",
+    sourcePath: "C:\\Downloads\\current.mp4",
+    targetPath: "I:\\项目\\素材\\001_初始素材\\current.mp4",
+    targetRelativePath: "素材\\001_初始素材\\current.mp4",
+    sourceFingerprint: { size: 256, mtimeMs: 10, ctimeMs: 20 },
+    byteCount: 256,
+    batchIndex: 1,
+  }, now);
+  const before = JSON.parse(JSON.stringify(state));
+
+  assert.throws(
+    () => State.commitTransaction(state, {
+      id: "tx-other",
+      mode: "copy",
+      byteCount: 256,
+    }, now),
+    /事务 ID 与待处理记录不一致/,
+  );
+  assert.deepEqual(state, before);
+});
+
+test("提交事务必须携带与 pending 完全一致的非空 ID", () => {
+  let state = State.createState("I:\\项目", now);
+  state = State.beginTransaction(state, {
+    id: "tx-required-id",
+    sourcePath: "C:\\Downloads\\required.mp4",
+    targetPath: "I:\\项目\\素材\\required.mp4",
+    targetRelativePath: "素材\\required.mp4",
+    byteCount: 32,
+    batchIndex: 1,
+  }, now);
+  const before = JSON.parse(JSON.stringify(state));
+
+  assert.throws(() => State.commitTransaction(state, { mode: "copy" }, now), /缺少事务 ID/);
+  assert.deepEqual(state, before);
+
+  const missingPendingId = JSON.parse(JSON.stringify(state));
+  delete missingPendingId.pendingTransaction.id;
+  assert.throws(
+    () => State.commitTransaction(missingPendingId, { id: "tx-required-id", mode: "copy" }, now),
+    /待处理记录缺少事务 ID/,
+  );
+});
+
+test("没有 pending 时只接受与既有记录完全一致的幂等提交", () => {
+  let state = State.createState("I:\\项目", now);
+  state = State.beginTransaction(state, {
+    id: "tx-exact-repeat",
+    sourcePath: "C:\\Downloads\\repeat.mp4",
+    targetPath: "I:\\项目\\素材\\repeat.mp4",
+    targetRelativePath: "素材\\repeat.mp4",
+    byteCount: 48,
+    batchIndex: 1,
+    mode: "copy",
+  }, now);
+  state = State.commitTransaction(state, { id: "tx-exact-repeat", mode: "copy" }, now);
+  const beforeRepeat = JSON.parse(JSON.stringify(state));
+
+  const repeated = State.commitTransaction(state, { ...state.transactions[0] }, now);
+  assert.deepEqual(repeated, beforeRepeat);
+  assert.throws(
+    () => State.commitTransaction(state, {
+      ...state.transactions[0],
+      targetRelativePath: "素材\\另一位置.mp4",
+    }, now),
+    /没有与提交结果匹配的待处理事务/,
+  );
+  assert.throws(
+    () => State.commitTransaction(State.createState("I:\\项目", now), {
+      id: "tx-orphan",
+      sourcePath: "C:\\Downloads\\orphan.mp4",
+      targetPath: "I:\\项目\\素材\\orphan.mp4",
+      targetRelativePath: "素材\\orphan.mp4",
+      byteCount: 12,
+      batchIndex: 1,
+      mode: "copy",
+    }, now),
+    /没有与提交结果匹配的待处理事务/,
+  );
 });
 
 test("重复使用的事务 ID 不能清除另一项待处理操作", () => {
@@ -239,6 +526,79 @@ test("重复使用的事务 ID 不能清除另一项待处理操作", () => {
   assert.equal(state.pendingTransaction.status, "conflict");
   assert.match(state.pendingTransaction.error, /事务 ID/);
   assert.equal(state.batches[0].fileCount, 1);
+});
+
+test("重复事务 ID 只有完整事务身份一致时才会清除 pending", () => {
+  const first = {
+    id: "tx-full-collision",
+    sourcePath: "C:\\Downloads\\same.mp4",
+    targetPath: "I:\\项目\\素材\\同日添加素材\\same.mp4",
+    cleanupPath: "C:\\Downloads\\same.mp4.premiere-material-tx-full-collision.pending-delete",
+    targetRelativePath: "素材\\同日添加素材\\same.mp4",
+    sourceFingerprint: { size: 10, mtimeMs: 100, ctimeMs: 200, dev: 3, ino: 7 },
+    targetFingerprint: { size: 10, mtimeMs: 300, ctimeMs: 400, dev: 4, ino: 8 },
+    byteCount: 10,
+    batchIndex: 1,
+    mode: "copy",
+    targetMethod: "rename",
+    modeEvidence: { proven: true, reason: "跨卷" },
+    deleteSource: true,
+    projectPath: "I:\\项目\\剪辑.prproj",
+    projectIdentity: "path:i:\\项目\\剪辑.prproj",
+    itemCount: 1,
+    itemIds: ["clip-1"],
+    itemSignatures: [{ itemId: "clip-1", itemName: "same.mp4", mediaPath: "C:\\Downloads\\same.mp4" }],
+  };
+  let state = State.createState("I:\\项目", now);
+  state = State.beginTransaction(state, first, now);
+  state = State.commitTransaction(state, { id: first.id }, now);
+
+  const conflicting = {
+    ...first,
+    targetPath: "I:\\项目\\素材\\同日添加素材\\other.mp4",
+    cleanupPath: "C:\\Downloads\\other.pending-delete",
+    sourceFingerprint: { ...first.sourceFingerprint, ino: 70 },
+    targetFingerprint: { ...first.targetFingerprint, ino: 80 },
+    byteCount: 99,
+    mode: "rename",
+    targetMethod: "link",
+    modeEvidence: { proven: false, reason: "无法确认" },
+    itemIds: ["clip-2"],
+    itemSignatures: [{ itemId: "clip-2", itemName: "other.mp4", mediaPath: first.sourcePath }],
+  };
+  state = State.beginTransaction(state, conflicting, now);
+  state = State.commitTransaction(state, { id: first.id }, now);
+
+  assert.equal(state.transactions.length, 1);
+  assert.equal(state.transactions[0].byteCount, 10);
+  assert.equal(state.batches[0].fileCount, 1);
+  assert.equal(state.batches[0].byteCount, 10);
+  assert.equal(state.pendingTransaction.status, "conflict");
+  assert.equal(state.pendingTransaction.byteCount, 99);
+  assert.match(state.pendingTransaction.error, /事务 ID.*冲突/);
+});
+
+test("旧版记录缺少完整事务身份时不会被当成可清除的幂等提交", () => {
+  const transaction = {
+    id: "tx-legacy-repeat",
+    sourcePath: "C:\\Downloads\\legacy.mp4",
+    targetPath: "I:\\项目\\素材\\legacy.mp4",
+    targetRelativePath: "素材\\legacy.mp4",
+    sourceFingerprint: { size: 20, mtimeMs: 100 },
+    byteCount: 20,
+    batchIndex: 1,
+    mode: "copy",
+  };
+  let state = State.createState("I:\\项目", now);
+  state = State.beginTransaction(state, transaction, now);
+  state = State.commitTransaction(state, { id: transaction.id }, now);
+  delete state.transactions[0].identityVersion;
+  state = State.beginTransaction(state, transaction, now);
+  state = State.commitTransaction(state, { id: transaction.id }, now);
+
+  assert.equal(state.transactions.length, 1);
+  assert.equal(state.pendingTransaction.status, "conflict");
+  assert.match(state.pendingTransaction.error, /事务 ID.*冲突/);
 });
 
 test("每个 .prproj（包括 Auto-Save 快照）都有独立基线", () => {
@@ -409,6 +769,55 @@ test("等待 Premiere 保存的状态会在恢复后保留并阻断文件事务"
     /补链尚未确认保存/,
   );
   assert.equal(State.clearPendingProjectSave(hydrated, now).pendingProjectSave, null);
+});
+
+test("确认恢复候选只更新同一条待保存工程记录", () => {
+  const updatedAt = new Date("2026-09-02T02:10:00.000Z");
+  let state = State.createState("I:\\项目", now);
+  state = State.beginProjectSave(state, {
+    id: "save-recovery",
+    sourcePath: "C:\\Downloads\\voice.wav",
+    targetRelativePath: "素材\\001_初始素材\\voice.wav",
+    targetFingerprint: { size: 100, mtimeMs: 2000 },
+    projectPath: "I:\\项目\\剪辑.prproj",
+    projectIdentity: "guid|i:\\项目\\剪辑.prproj",
+    itemIds: ["old-item"],
+    itemCount: 1,
+  }, now);
+  const original = state;
+  const details = {
+    id: "save-recovery",
+    itemIds: ["new-item"],
+    itemCount: 1,
+    itemSignatures: [{ itemId: "new-item", itemName: "voice.wav", mediaPath: "C:\\Downloads\\voice.wav" }],
+  };
+
+  const updated = State.updatePendingProjectSave(state, details, updatedAt);
+
+  assert.deepEqual(original.pendingProjectSave.itemIds, ["old-item"]);
+  assert.deepEqual(updated.pendingProjectSave.itemIds, ["new-item"]);
+  assert.equal(updated.pendingProjectSave.id, "save-recovery");
+  assert.equal(updated.pendingProjectSave.sourcePath, "C:\\Downloads\\voice.wav");
+  assert.equal(updated.pendingProjectSave.targetRelativePath, "素材\\001_初始素材\\voice.wav");
+  assert.deepEqual(updated.pendingProjectSave.targetFingerprint, { size: 100, mtimeMs: 2000 });
+  assert.equal(updated.pendingProjectSave.projectPath, "I:\\项目\\剪辑.prproj");
+  assert.equal(updated.pendingProjectSave.projectIdentity, "guid|i:\\项目\\剪辑.prproj");
+  assert.equal(updated.pendingProjectSave.status, "pending");
+  assert.equal(updated.pendingProjectSave.updatedAt, updatedAt.toISOString());
+  assert.equal(updated.updatedAt, updatedAt.toISOString());
+
+  details.itemIds[0] = "mutated-after-update";
+  details.itemSignatures[0].itemId = "mutated-after-update";
+  assert.deepEqual(updated.pendingProjectSave.itemIds, ["new-item"]);
+  assert.equal(updated.pendingProjectSave.itemSignatures[0].itemId, "new-item");
+  assert.throws(
+    () => State.updatePendingProjectSave(state, { id: "another-save", itemIds: ["other"] }, updatedAt),
+    /保存记录 ID 与待处理记录不一致/,
+  );
+  assert.throws(
+    () => State.updatePendingProjectSave(State.createState("I:\\项目", now), { id: "save-recovery" }, updatedAt),
+    /没有可以更新的 Premiere 工程保存记录/,
+  );
 });
 
 test("恢复状态时会拒绝可能越出素材根目录的旁路文件路径", () => {

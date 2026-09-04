@@ -29,10 +29,15 @@ test("状态写入使用乐观修订号和已恢复备份的上下文", () => {
   assert.match(source, /MATERIAL_BATCH_STATE_LOST/);
 });
 
-test("映射重链接会在操作前后检查已记录的目标", () => {
+test("映射重链接会在操作前后对同一路径执行严格目标指纹核验", () => {
   assert.match(source, /inspectMappingTarget\(mapping\)/);
-  assert.match(source, /Transaction\.samePortableFingerprint\(mapping\.targetFingerprint, targetFingerprint\)/);
+  assert.match(
+    source,
+    /Transaction\.sameStrongPathFingerprint\(mapping\.targetFingerprint, targetFingerprint\)/,
+    "同一路径目标必须比较包含本机文件身份的完整指纹",
+  );
   assert.match(source, /var afterRelink = await inspectMappingTarget\(mapping\);/);
+  assert.match(source, /Transaction\.sameStrongPathFingerprint\(verification\.targetFingerprint, afterRelink\.targetFingerprint\)/);
   assert.match(source, /mapping-target-unverified/);
   assert.match(source, /mapping-target-mismatch/);
   const journalStart = source.indexOf("State.beginProjectSave");
@@ -41,7 +46,7 @@ test("映射重链接会在操作前后检查已记录的目标", () => {
   assert.ok(journalStart >= 0 && journalPersist > journalStart && relink > journalPersist);
   assert.match(source, /State\.failProjectSave/);
   assert.match(source, /State\.clearPendingProjectSave/);
-  assert.match(source, /Premiere 工程还有一处补链没有确认保存/);
+  assert.match(source, /Premiere 工程保存尚未确认/);
 });
 
 test("不稳定文件保持等待状态且不会进入文件事务", () => {
@@ -62,7 +67,7 @@ test("审核操作通过不透明 ID 定位，而不信任 DOM 路径", () => {
   assert.match(source, /State\.removeProjectBaselineEntry/);
   assert.match(source, /State\.updateMappingTargetFingerprint/);
   assert.doesNotMatch(source, /dataset\.(?:path|sourcePath|targetPath)/);
-  assert.match(source, /!ScanPolicy\.hasPortableFingerprint\(review\.targetFingerprint\)/);
+  assert.match(source, /!Transaction\.hasStrongFileIdentity\(review\.targetFingerprint\)/);
   assert.match(source, /请在 Premiere 中重新链接或移除这条离线素材/);
 });
 
@@ -83,9 +88,15 @@ test("同一保护文件夹不能重新映射到第二个素材库 ID", () => {
   assert.match(source, /这个目录已经在不搬动列表中/);
 });
 
-test("缺少可移植指纹的文件会成为可处理的审核项", () => {
-  const unavailableGate = source.indexOf("if (!ScanPolicy.hasPortableFingerprint(group.sourceFingerprint))");
+test("缺少可靠文件身份的文件会成为可处理的审核项", () => {
+  const unavailableGate = source.indexOf("if (!Transaction.hasStrongFileIdentity(group.sourceFingerprint))");
   const pendingIncrement = source.indexOf("pendingCount += 1;", unavailableGate);
   assert.ok(unavailableGate >= 0 && pendingIncrement > unavailableGate);
   assert.match(source.slice(unavailableGate, pendingIncrement), /recordReview\(group, "source-unavailable"/);
+});
+
+test("恢复清理不会把已经不存在的原路径显示成待处理文件", () => {
+  assert.match(source, /typeof cleanupResult\.remainingSourcePath === "string"/);
+  assert.doesNotMatch(source, /cleanupResult\.remainingSourcePath \|\| pending\.sourcePath/);
+  assert.match(source, /remainingSourcePath \? "原素材还没有彻底移走" : "原素材删除后的核验没有完成"/);
 });

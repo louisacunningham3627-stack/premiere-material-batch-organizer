@@ -75,7 +75,13 @@
         var item = items[index];
         var itemId = "";
         try { itemId = String(item.getId()); } catch (error) {}
-        if (itemId && seenItemIds.has(itemId)) continue;
+        if (itemId && seenItemIds.has(itemId)) {
+          warnings.push(
+            "检测到重复的 Premiere 项目项 ID " + itemId +
+            "（" + String(item.name || "未命名项目项") + "），无法确认素材清单完整性",
+          );
+          continue;
+        }
         if (itemId) seenItemIds.add(itemId);
 
         var childFolder = await castFolder(ppro, item);

@@ -7,7 +7,7 @@
   <title>素材自动整理</title>
   <link rel="stylesheet" href="styles.css">
 </head>
-<body data-state="setup" data-onboarding="protection">
+<body data-state="setup" data-onboarding="protection" data-recovery="false">
   <main class="panel" id="panelRoot">
     <header class="topbar">
       <div class="brand-lockup">
@@ -39,7 +39,33 @@
           <span class="toggle" aria-hidden="true"><span></span></span>
         </label>
       </div>
+      <div class="recovery-details" id="recoveryDetails" role="group" aria-label="上次整理详情" hidden>
+        <div class="recovery-file">
+          <span class="recovery-label">待核对文件</span>
+          <strong id="recoveryFilename">318完整版.mp4</strong>
+          <span class="recovery-size" id="recoverySize">5.40 GB</span>
+        </div>
+        <div class="recovery-path-block">
+          <span class="recovery-label" id="recoverySourceLabel">原位置</span>
+          <code id="recoverySourcePath">C:\Users\剪辑师\Downloads\318完整版.mp4</code>
+        </div>
+        <div class="recovery-path-block">
+          <span class="recovery-label">新位置</span>
+          <code id="recoveryTargetPath">D:\剪辑项目\素材\001_初始素材\318完整版.mp4</code>
+        </div>
+        <div class="recovery-checks" aria-label="文件与工程状态">
+          <div class="recovery-check-row"><span>原位置状态</span><strong id="recoverySourceStatus">存在，等待核对</strong></div>
+          <div class="recovery-check-row"><span>新位置状态</span><strong id="recoveryTargetStatus">存在，等待核对</strong></div>
+          <div class="recovery-check-row"><span>Premiere 当前链接</span><strong id="recoveryLinkStatus">尚未确认</strong></div>
+        </div>
+        <p class="recovery-explanation" id="recoveryConfirmation">本次核对不会删除任何磁盘文件；真正更新 Premiere 链接、保存工程或清理原位置前，都会再次确认。</p>
+      </div>
       <button class="state-action" id="stateAction" type="button" aria-controls="settingsPage">设置不搬动文件夹</button>
+      <div class="recovery-location-actions" id="recoveryLocationActions" hidden>
+        <button class="button button-secondary recovery-open" id="openRecoverySourceButton" type="button">打开原素材位置</button>
+        <button class="button button-secondary recovery-open" id="openRecoveryTargetButton" type="button">打开新位置</button>
+      </div>
+      <button class="button button-quiet recovery-close" id="closeRecoveryRecordButton" type="button" hidden>保留现状并关闭记录</button>
     </section>
 
     <section class="review-section" id="reviewSection" aria-labelledby="reviewHeading" hidden>
@@ -51,7 +77,7 @@
       <div class="review-list" id="reviewList" role="list" aria-live="polite"></div>
     </section>
 
-    <section class="batch-section" aria-labelledby="batchHeading">
+    <section class="batch-section" id="batchSection" aria-labelledby="batchHeading">
       <div class="destination-heading">
         <h2 id="batchHeading">当前交接文件夹</h2>
         <span class="batch-status" id="batchStatus">自动整理中</span>
@@ -60,12 +86,13 @@
         <span>磁盘位置</span>
         <code id="batchPath">素材\2026年09月04日添加素材</code>
       </div>
+      <p class="batch-legacy-note" id="batchLegacyNote" hidden>这是旧版已存在的文件夹，名称不会自动修改。</p>
       <div class="batch-rail" aria-hidden="true"><span class="rail-fill" id="railFill"></span></div>
-      <p class="batch-summary">目前已有 <strong id="fileCount">12</strong> 个文件 · <strong id="fileSize">18.6 GB</strong></p>
+      <p class="batch-summary">已完成整理 <strong id="fileCount">12</strong> 个文件 · <strong id="fileSize">18.6 GB</strong></p>
       <span class="visually-hidden" id="batchName">2026年09月04日添加素材</span>
     </section>
 
-    <section class="action-section" aria-label="当前交接操作">
+    <section class="action-section" id="actionSection" aria-label="当前交接操作">
       <button class="button button-primary" id="openBatchButton" type="button">
         <span>打开当前文件夹</span>
       </button>
@@ -220,8 +247,86 @@
           ],
           activity: [['2 个素材需要人工处理', '文件均未移动或覆盖'], ['自动整理已暂停', '完成上方处理后再继续']],
         },
-        failure: { title: '上次移动还没有完成', desc: '原位置仍有同一素材时，自动整理和交接都会暂停。', status: '需要检查', files: '10 / 12', size: '15.8 / 18.6 GB', progress: 0, kind: 'danger', action: '检查上次整理', intent: 'recover', icon: 'alert', auto: false, project: '城市纪录片_EP03.prproj', meta: '工程路径已识别', path: 'D:\\剪辑项目\\城市纪录片_EP03.prproj', activity: [['上次移动没有完成', '目标文件与 Premiere 链接等待核对'], ['不会当作整理成功', '处理原位置文件后再检查']] },
-        savefailed: { title: 'Premiere 工程还没有确认保存', desc: '素材已在整理后的位置；请检查链接并重新保存当前工程。', status: '需要检查', files: '12', size: '18.6 GB', progress: 0, kind: 'danger', action: '检查上次整理', intent: 'recover', icon: 'alert', auto: false, project: '城市纪录片_EP03.prproj', meta: '等待重新保存', path: 'D:\\剪辑项目\\城市纪录片_EP03.prproj', activity: [['素材链接已经更新', '等待 Premiere 工程确认保存'], ['自动整理已暂停', '检查完成前不会继续移动素材']] }
+        failure: {
+          title: '上次整理未完成',
+          desc: '先检查这个文件的原位置、新位置和 Premiere 链接。检查本身不会移动或删除文件。',
+          status: '整理已暂停',
+          files: '10 / 12',
+          size: '15.8 / 18.6 GB',
+          progress: 0,
+          kind: 'danger',
+          action: '检查文件和链接',
+          intent: 'recover',
+          icon: 'alert',
+          auto: false,
+          project: '城市纪录片_EP03.prproj',
+          meta: '工程路径已识别',
+          path: 'D:\\剪辑项目\\城市纪录片_EP03.prproj',
+          recovery: {
+            filename: '318完整版.mp4',
+            source: 'C:\\Users\\剪辑师\\Downloads\\318完整版.mp4',
+            target: 'D:\\剪辑项目\\素材\\001_初始素材\\318完整版.mp4',
+            size: '5.40 GB',
+            sourceStatus: '存在，等待核对',
+            targetStatus: '存在，等待核对',
+            linkStatus: '尚未确认',
+          },
+          activity: [['上次移动没有完成', '目标文件与 Premiere 链接等待核对'], ['不会当作整理成功', '处理原位置文件后再检查']],
+        },
+        manual: {
+          title: '文件现场已检查',
+          desc: '只读核对已经完成；两处文件都保留，Premiere 仍指向原位置。',
+          status: '等待决定',
+          files: '10 / 12',
+          size: '15.8 / 18.6 GB',
+          progress: 0,
+          kind: 'danger',
+          action: '重新核对',
+          intent: 'recover',
+          icon: 'alert',
+          auto: false,
+          project: '城市纪录片_EP03.prproj',
+          meta: '工程路径已识别',
+          path: 'D:\\剪辑项目\\城市纪录片_EP03.prproj',
+          recovery: {
+            filename: '318完整版.mp4',
+            source: 'C:\\Users\\剪辑师\\Downloads\\318完整版.mp4',
+            target: 'D:\\剪辑项目\\素材\\001_初始素材\\318完整版.mp4',
+            size: '5.40 GB',
+            sourceStatus: '存在 · 5.40 GB',
+            targetStatus: '存在 · 5.40 GB',
+            linkStatus: '仍在原位置',
+            confirmation: '旧记录缺少可验证的新位置身份，插件不会自行猜测。两处同尺寸文件都已保留；如果你决定自行处理，可以关闭这条旧记录。',
+            canClose: true,
+          },
+          activity: [['只读核对已完成', '没有移动、删除、补链或保存工程']],
+        },
+        savefailed: {
+          title: 'Premiere 工程保存尚未确认',
+          desc: '先检查素材的新位置和 Premiere 链接。检查本身不会删除文件。',
+          status: '整理已暂停',
+          files: '12',
+          size: '18.6 GB',
+          progress: 0,
+          kind: 'danger',
+          action: '检查文件和链接',
+          intent: 'recover',
+          icon: 'alert',
+          auto: false,
+          project: '城市纪录片_EP03.prproj',
+          meta: '等待重新保存',
+          path: 'D:\\剪辑项目\\城市纪录片_EP03.prproj',
+          recovery: {
+            filename: '主镜头.mov',
+            source: 'F:\\下载素材\\主镜头.mov',
+            target: 'D:\\剪辑项目\\素材\\2026年09月04日添加素材\\主镜头.mov',
+            size: '4.80 GB',
+            sourceStatus: '等待清理确认',
+            targetStatus: '存在，已验证',
+            linkStatus: '已指向新位置，等待保存',
+          },
+          activity: [['素材链接已经更新', '等待 Premiere 工程确认保存'], ['自动整理已暂停', '检查完成前不会继续移动素材']],
+        }
       };
       const qs = (id) => document.getElementById(id);
       const settingsPreviewMarkup = {
@@ -317,13 +422,18 @@
       };
       const setState = (name) => {
         const data = stateData[name] || stateData.setup;
+        const recovery = data.recovery || null;
         document.body.dataset.state = name;
         document.body.dataset.onboarding = data.onboarding || 'complete';
+        document.body.dataset.recovery = recovery ? 'true' : 'false';
+        ['autoCollectControl', 'batchSection', 'actionSection', 'protectedCount', 'activityDetails', 'reviewSection'].forEach((id) => {
+          qs(id).hidden = Boolean(recovery);
+        });
         qs('stateTitle').textContent = data.title;
         qs('stateDescription').textContent = data.desc;
         qs('batchStatus').textContent = data.status;
-        qs('fileCount').textContent = data.files;
-        qs('fileSize').textContent = data.size;
+        qs('fileCount').textContent = recovery ? '0' : data.files;
+        qs('fileSize').textContent = recovery ? '0 B' : data.size;
         qs('railFill').style.width = `${data.progress}%`;
         qs('projectName').textContent = data.project;
         qs('projectMeta').textContent = data.meta;
@@ -335,8 +445,36 @@
         action.hidden = !data.action;
         action.textContent = data.action;
         action.dataset.previewIntent = data.intent;
+        const recoveryDetails = qs('recoveryDetails');
+        const recoveryLocations = qs('recoveryLocationActions');
+        const recoverySourceOpen = qs('openRecoverySourceButton');
+        const recoveryOpen = qs('openRecoveryTargetButton');
+        const recoveryClose = qs('closeRecoveryRecordButton');
+        recoveryDetails.hidden = !recovery;
+        recoveryLocations.hidden = !recovery;
+        recoverySourceOpen.hidden = !recovery;
+        recoveryOpen.hidden = !recovery;
+        recoveryClose.hidden = !(recovery && recovery.canClose);
+        recoverySourceOpen.disabled = !recovery || !recovery.source;
+        recoveryOpen.disabled = !recovery || !recovery.target;
+        recoveryClose.disabled = !(recovery && recovery.canClose);
+        if (recovery) {
+          qs('recoveryFilename').textContent = recovery.filename;
+          qs('recoverySourceLabel').textContent = recovery.sourceLabel || '原位置';
+          qs('recoverySourcePath').textContent = recovery.source;
+          qs('recoveryTargetPath').textContent = recovery.target;
+          qs('recoverySize').textContent = recovery.size;
+          qs('recoverySourceStatus').textContent = recovery.sourceStatus;
+          qs('recoveryTargetStatus').textContent = recovery.targetStatus;
+          qs('recoveryLinkStatus').textContent = recovery.linkStatus;
+          qs('recoveryConfirmation').textContent = recovery.confirmation || '本次核对不会删除任何磁盘文件；真正更新 Premiere 链接、保存工程或清理原位置前，都会再次确认。';
+        }
+        const recoveryTargetParts = recovery ? recovery.target.split(/[\\/]+/).filter(Boolean) : [];
+        const directParentName = recoveryTargetParts.length > 1 ? recoveryTargetParts[recoveryTargetParts.length - 2] : '';
+        qs('batchLegacyNote').hidden = !/^\d{3}_/.test(directParentName);
         qs('autoCollectToggle').checked = data.auto;
         renderReviews(data.reviews);
+        if (recovery) qs('reviewSection').hidden = true;
         qs('autoCollectToggle').disabled = ['setup', 'activate', 'policy', 'empty', 'unsaved', 'running', 'moving', 'conflict', 'failure', 'savefailed'].includes(name);
         const locked = ['setup', 'activate', 'policy', 'empty', 'unsaved', 'running', 'waiting', 'moving', 'conflict', 'failure', 'savefailed'].includes(name);
         qs('openBatchButton').disabled = ['setup', 'activate', 'empty', 'unsaved', 'running', 'moving'].includes(name);
@@ -405,12 +543,19 @@
       window.addEventListener('batch-collector:close-settings', closeSettingsPage);
       qs('refreshButton').addEventListener('click', () => window.dispatchEvent(new CustomEvent('batch-collector:refresh')));
       qs('openBatchButton').addEventListener('click', () => window.dispatchEvent(new CustomEvent('batch-collector:open-batch')));
+      qs('openRecoverySourceButton').addEventListener('click', () => window.dispatchEvent(new CustomEvent('batch-collector:open-recovery-source')));
+      qs('openRecoveryTargetButton').addEventListener('click', () => window.dispatchEvent(new CustomEvent('batch-collector:open-recovery-target')));
+      qs('closeRecoveryRecordButton').addEventListener('click', () => {
+        if (document.body.classList.contains('preview-mode')) setState('paused');
+        window.dispatchEvent(new CustomEvent('batch-collector:close-recovery-record'));
+      });
       qs('handoffButton').addEventListener('click', () => window.dispatchEvent(new CustomEvent('batch-collector:handoff')));
       qs('autoCollectToggle').addEventListener('change', (event) => window.dispatchEvent(new CustomEvent('batch-collector:auto-collect', { detail: { enabled: event.target.checked } })));
       qs('stateAction').addEventListener('click', () => {
         const intent = qs('stateAction').dataset.previewIntent;
         if (document.body.classList.contains('preview-mode') && intent === 'settings') openSettingsPage();
         if (document.body.classList.contains('preview-mode') && (intent === 'auto' || intent === 'policy')) setState('ready');
+        if (document.body.classList.contains('preview-mode') && intent === 'recover' && document.body.dataset.state === 'failure') setState('manual');
         if (document.body.classList.contains('preview-mode') && intent === 'activity') showActivity();
         if (intent === 'review') showReviews();
         window.dispatchEvent(new CustomEvent('batch-collector:state-action', { detail: { state: document.body.dataset.state } }));
