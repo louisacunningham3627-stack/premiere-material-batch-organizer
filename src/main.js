@@ -15,7 +15,9 @@
   var Storage = globalThis.MaterialBatchStorage;
   var ScanPolicy = globalThis.MaterialBatchScanPolicy;
 
-  var MACHINE_SETTINGS_KEY = "hechao.material-batch-organizer.machine.v1";
+  var MACHINE_SETTINGS_KEY = "hechao.material-batch-organizer.machine.v2";
+  var LEGACY_MACHINE_SETTINGS_KEY = "hechao.material-batch-organizer.machine.v1";
+  var MACHINE_SETTINGS_SCHEMA_VERSION = 2;
   var POLL_INTERVAL_MS = 2600;
   var operationQueue = Coordination.createOperationQueue();
   var monitorGuard = Coordination.createGenerationGuard();
@@ -46,6 +48,11 @@
   var reviewItems = [];
   var lastProtectedCount = 0;
   var lastInventoryCount = 0;
+  var outsideMediaCount = 0;
+  var outsideCollectCount = 0;
+  var outsideReviewCount = 0;
+  var outsideMediaBytes = 0;
+  var outsideUnreadableCount = 0;
   var protectedMappingValidation = { validMappings: [], unresolved: [], statusById: {} };
 
   function element(id) {
@@ -247,37 +254,72 @@
 
   function defaultMachineSettings() {
     return {
-      autoByMediaSpace: {},
-      protectedSetupByMediaSpace: {},
+      schemaVersion: MACHINE_SETTINGS_SCHEMA_VERSION,
+      autoByProject: {},
+      projectSetupByProject: {},
+      protectedRevisionByProject: {},
       protectedMappings: [],
     };
+  }
+
+  function sanitizedProtectedMappings(raw) {
+    return Array.isArray(raw && raw.protectedMappings)
+      ? raw.protectedMappings.filter(function (mapping) {
+          return mapping && mapping.libraryId && mapping.rootPath;
+        }).map(function (mapping) {
+          return {
+            libraryId: String(mapping.libraryId),
+            label: String(mapping.label || "共享素材库"),
+            rootPath: Core.toFileSystemPath(mapping.rootPath),
+          };
+        })
+      : [];
+  }
+
+  function booleanSettingsMap(value) {
+    var result = {};
+    if (!value || typeof value !== "object" || Array.isArray(value)) return result;
+    Object.keys(value).forEach(function (key) {
+      if (value[key] === true) result[String(key)] = true;
+      else if (value[key] === false) result[String(key)] = false;
+    });
+    return result;
+  }
+
+  function revisionSettingsMap(value) {
+    var result = {};
+    if (!value || typeof value !== "object" || Array.isArray(value)) return result;
+    Object.keys(value).forEach(function (key) {
+      var revision = Number(value[key]);
+      if (Number.isFinite(revision) && revision >= 1 && Math.floor(revision) === revision) {
+        result[String(key)] = revision;
+      }
+    });
+    return result;
   }
 
   function loadMachineSettings() {
     var defaults = defaultMachineSettings();
     try {
       var raw = JSON.parse(localStorage.getItem(MACHINE_SETTINGS_KEY) || "null");
-      if (!raw || typeof raw !== "object") return defaults;
-      return {
-        autoByMediaSpace: raw.autoByMediaSpace && typeof raw.autoByMediaSpace === "object" ? raw.autoByMediaSpace : {},
-        protectedSetupByMediaSpace: raw.protectedSetupByMediaSpace && typeof raw.protectedSetupByMediaSpace === "object"
-          ? raw.protectedSetupByMediaSpace
-          : {},
-        protectedMappings: Array.isArray(raw.protectedMappings)
-          ? raw.protectedMappings.filter(function (mapping) {
-              return mapping && mapping.libraryId && mapping.rootPath;
-            }).map(function (mapping) {
-              return {
-                libraryId: String(mapping.libraryId),
-                label: String(mapping.label || "共享素材库"),
-                rootPath: Core.toFileSystemPath(mapping.rootPath),
-              };
-            })
-          : [],
-      };
-    } catch (error) {
-      return defaults;
-    }
+      if (raw && typeof raw === "object" && raw.schemaVersion === MACHINE_SETTINGS_SCHEMA_VERSION) {
+        return {
+          schemaVersion: MACHINE_SETTINGS_SCHEMA_VERSION,
+          autoByProject: booleanSettingsMap(raw.autoByProject),
+          projectSetupByProject: booleanSettingsMap(raw.projectSetupByProject),
+          protectedRevisionByProject: revisionSettingsMap(raw.protectedRevisionByProject),
+          protectedMappings: sanitizedProtectedMappings(raw),
+        };
+      }
+      if (raw && typeof raw === "object") defaults.protectedMappings = sanitizedProtectedMappings(raw);
+    } catch (error) {}
+
+    // v1 只迁移本机文件夹路径。旧版的开启、工程确认和保护确认都不能成为新版授权。
+    try {
+      var legacy = JSON.parse(localStorage.getItem(LEGACY_MACHINE_SETTINGS_KEY) || "null");
+      if (!defaults.protectedMappings.length) defaults.protectedMappings = sanitizedProtectedMappings(legacy);
+    } catch (legacyError) {}
+    return defaults;
   }
 
   function saveMachineSettings() {
@@ -288,39 +330,62 @@
     }
   }
 
+  function currentProjectSettingKey() {
+    return context && context.projectPath ? State.projectKey(context.projectPath) : "";
+  }
+
+  function currentProjectSetup() {
+    var key = currentProjectSettingKey();
+    return Boolean(projectState && key && machineSettings.projectSetupByProject[key] === true);
+  }
+
   function currentAutoSetting() {
-    return Boolean(projectState && machineSettings.autoByMediaSpace[projectState.mediaSpaceId] === true);
+    var key = currentProjectSettingKey();
+    return Boolean(key && currentProjectSetup() && machineSettings.autoByProject[key] === true);
   }
 
   function currentProtectionSetup() {
-    return Boolean(projectState && machineSettings.protectedSetupByMediaSpace[projectState.mediaSpaceId] === true);
+    var key = currentProjectSettingKey();
+    var revision = Math.max(1, Math.floor(Number(projectState && projectState.protectedConfigRevision) || 1));
+    return Boolean(projectState && key && machineSettings.protectedRevisionByProject[key] === revision);
   }
 
   function setMachineSettings(values) {
     if (!projectState) return;
-    var key = projectState.mediaSpaceId;
+    // 所有设置写入都先合并最新本机值；同一宿主内没有异步间隙，避免另一个面板的工程开关被旧快照覆盖。
+    machineSettings = loadMachineSettings();
     var changes = [];
     Object.keys(values || {}).forEach(function (name) {
       var target = name === "auto"
-        ? machineSettings.autoByMediaSpace
+        ? machineSettings.autoByProject
+        : name === "projectSetup"
+          ? machineSettings.projectSetupByProject
         : name === "protection"
-          ? machineSettings.protectedSetupByMediaSpace
+          ? machineSettings.protectedRevisionByProject
           : null;
-      if (!target) return;
+      var key = currentProjectSettingKey();
+      if (!target || !key) return;
+      var desired = name === "protection"
+        ? (values[name] === true ? Math.max(1, Math.floor(Number(projectState.protectedConfigRevision) || 1)) : null)
+        : values[name] === true;
+      var hadPrevious = Object.prototype.hasOwnProperty.call(target, key);
+      if ((!hadPrevious && (desired === false || desired === null)) || (hadPrevious && target[key] === desired)) return;
       changes.push({
         target: target,
-        hadPrevious: Object.prototype.hasOwnProperty.call(target, key),
+        key: key,
+        hadPrevious: hadPrevious,
         previous: target[key],
       });
-      target[key] = values[name] === true;
+      if (desired === null) delete target[key];
+      else target[key] = desired;
     });
     if (!changes.length) return;
     try {
       saveMachineSettings();
     } catch (error) {
       changes.forEach(function (change) {
-        if (change.hadPrevious) change.target[key] = change.previous;
-        else delete change.target[key];
+        if (change.hadPrevious) change.target[change.key] = change.previous;
+        else delete change.target[change.key];
       });
       throw error;
     }
@@ -330,6 +395,36 @@
     var values = {};
     values[name] = value;
     setMachineSettings(values);
+  }
+
+  function pauseWorkspaceProjectsInMemory() {
+    if (!context || !context.workspaceRoot) return false;
+    var changed = false;
+    Object.keys(machineSettings.autoByProject).forEach(function (projectPath) {
+      if (machineSettings.autoByProject[projectPath] !== true) return;
+      if (!Core.samePath(Core.workspaceRootForProject(projectPath), context.workspaceRoot)) return;
+      machineSettings.autoByProject[projectPath] = false;
+      changed = true;
+    });
+    Object.keys(machineSettings.protectedRevisionByProject).forEach(function (projectPath) {
+      if (!Core.samePath(Core.workspaceRootForProject(projectPath), context.workspaceRoot)) return;
+      delete machineSettings.protectedRevisionByProject[projectPath];
+      changed = true;
+    });
+    return changed;
+  }
+
+  function pauseWorkspaceProjects() {
+    var previousAuto = JSON.parse(JSON.stringify(machineSettings.autoByProject));
+    var previousProtection = JSON.parse(JSON.stringify(machineSettings.protectedRevisionByProject));
+    if (!pauseWorkspaceProjectsInMemory()) return;
+    try {
+      saveMachineSettings();
+    } catch (error) {
+      machineSettings.autoByProject = previousAuto;
+      machineSettings.protectedRevisionByProject = previousProtection;
+      throw error;
+    }
   }
 
   function workspaceProtectedMappings() {
@@ -363,6 +458,17 @@
     return number.toFixed(index === 0 || number >= 100 ? 0 : number >= 10 ? 1 : 2) + " " + units[index];
   }
 
+  function outsideMediaSummary() {
+    var summary = "工程内素材保持原位；";
+    if (!outsideMediaCount) return summary + "暂未发现需要处理的工程外素材。";
+    summary += "工程外 " + outsideMediaCount + " 个 · " + formatBytes(outsideMediaBytes);
+    summary += outsideReviewCount
+      ? "，其中 " + outsideCollectCount + " 个待整理、" + outsideReviewCount + " 个需确认。"
+      : " 待整理。";
+    if (outsideUnreadableCount > 0) summary += "其中 " + outsideUnreadableCount + " 个大小暂时无法读取。";
+    return summary;
+  }
+
   function relativeBatchPath() {
     if (!projectState) return "素材";
     return Core.joinNativePath(projectState.mediaFolderName, State.currentBatch(projectState).name);
@@ -391,7 +497,7 @@
       var title = document.createElement("strong");
       title.textContent = context ? "等待开启自动整理" : "等待 Premiere 工程";
       var detail = document.createElement("small");
-      detail.textContent = context ? "工程里已有和以后新增的外部素材都会按规则整理" : "打开并保存工程后再重新检查";
+      detail.textContent = context ? "尚未移动；开启后才会整理工程外素材" : "打开并保存工程后再重新检查";
       copy.appendChild(title);
       copy.appendChild(detail);
       empty.appendChild(bullet);
@@ -646,27 +752,27 @@
         view = { mode: "setup", kind: "onboarding", title: "先设置不搬动文件夹", description: "后期包、共享音效库等要保持原位的文件夹，请先加入名单。没有也可以直接继续。", status: "尚未设置", action: "设置不搬动文件夹", icon: "shield" };
       } else if (unresolved.length) {
         view = { mode: "conflict", kind: "danger", title: "有共享文件夹需要重新选择", description: "“" + unresolved[0].label + "”在这台电脑上的位置还没选。", status: "需要处理", action: "选择文件夹", icon: "alert" };
-      } else if (reviewCount > 0) {
-        view = { mode: "conflict", kind: "danger", title: "有 " + reviewCount + " 个素材需要确认", description: "这些文件还在原位置，请逐项确认后继续。", status: "需要处理", action: "查看待确认素材", icon: "alert" };
-      } else if (!projectState.initialized) {
-        view = { mode: "setup", kind: "onboarding", title: "不搬动名单已确认", description: "现在可以开启自动整理。工程里已有和以后新增的外部素材都会搬入当前文件夹。", status: "等待开启", action: "开启自动整理", icon: "check" };
+      } else if (!currentProjectSetup() || !projectState.initialized) {
+        view = { mode: "activate", kind: "onboarding", title: "当前工程尚未开启", description: outsideMediaSummary(), status: "等待开启", action: "开始整理此工程", icon: "check" };
       } else if (State.needsCollectionPolicyAcceptance(projectState)) {
-        view = { mode: "policy", kind: "onboarding", title: "现有素材还没有整理", description: "新版会把当前工程已经引用、但仍在工程文件夹外的普通素材也搬入。确认不搬动名单无误后再开始。", status: "等待确认", action: "开始整理现有素材", icon: "check" };
+        view = { mode: "policy", kind: "onboarding", title: "此工程需要重新确认", description: outsideMediaSummary(), status: "等待确认", action: "开始整理此工程", icon: "check" };
+      } else if (reviewCount > 0) {
+        view = { mode: "conflict", kind: "danger", title: "有 " + reviewCount + " 个素材需要人工处理", description: "这些文件还在原位置，请按每项提示处理后继续。", status: "需要处理", action: "查看需处理素材", icon: "alert" };
       } else if (!currentAutoSetting()) {
-        view = { mode: "paused", kind: "warning", title: "自动整理已暂停", description: pendingCount ? pendingCount + " 个素材仍在原位置等待整理。" : "工程外的素材暂时留在原位置。", status: "已暂停", action: "继续自动整理", icon: "pause" };
+        view = { mode: "paused", kind: "warning", title: "此工程的自动整理已暂停", description: outsideMediaSummary(), status: "已暂停", action: "继续自动整理", icon: "pause" };
       } else if (pendingCount > 0) {
         view = { mode: "waiting", kind: "warning", title: "正在等待 " + pendingCount + " 个文件写完", description: "文件仍在下载或写入，暂时留在原位置；稳定后会自动整理。", status: "等待写完", action: "", icon: "refresh" };
       } else if (lastProtectedCount > 0) {
         view = { mode: "protected", kind: "protected", title: "共享素材已留在原位", description: lastProtectedCount + " 个素材来自“不搬动文件夹”，其余素材照常整理。", status: "自动整理中", action: "查看不搬动文件夹", icon: "shield" };
       } else {
-        view = { mode: "ready", kind: "ready", title: "自动整理已开启", description: "工程里已有和以后新增的原始素材、下载素材都会放入下面的文件夹；不搬动文件夹保持原位。", status: "自动整理中", action: "", icon: "check" };
+        view = { mode: "ready", kind: "ready", title: "此工程的自动整理已开启", description: "工程文件夹内的素材保持原位；以后新增的工程外普通素材会进入当前交接文件夹。", status: "自动整理中", action: "", icon: "check" };
       }
     }
 
     var onboardingStage = "complete";
     if (context && context.projectPath && projectState && !projectState.pendingTransaction && !projectState.pendingProjectSave && !activePanelError) {
       if (!currentProtectionSetup()) onboardingStage = "protection";
-      else if (!projectState.initialized) onboardingStage = "auto";
+      else if (!currentProjectSetup() || !projectState.initialized || State.needsCollectionPolicyAcceptance(projectState)) onboardingStage = "auto";
     }
     body.dataset.state = view.mode;
     body.dataset.onboarding = onboardingStage;
@@ -710,19 +816,21 @@
     var autoToggle = element("autoCollectToggle");
     if (autoToggle) {
       autoToggle.checked = currentAutoSetting();
-      autoToggle.disabled = !context || !context.projectPath || !projectState || !currentProtectionSetup() || !projectState.initialized || State.needsCollectionPolicyAcceptance(projectState) || Boolean(projectState && (projectState.pendingTransaction || projectState.pendingProjectSave)) || Boolean(activePanelError) || Boolean(unresolved && unresolved.length) || busy;
+      autoToggle.disabled = !context || !context.projectPath || !projectState || !currentProtectionSetup() || !currentProjectSetup() || !projectState.initialized || State.needsCollectionPolicyAcceptance(projectState) || Boolean(projectState && (projectState.pendingTransaction || projectState.pendingProjectSave)) || Boolean(activePanelError) || Boolean(unresolved && unresolved.length) || busy;
     }
     var openButton = element("openBatchButton");
-    if (openButton) openButton.disabled = !context || !context.projectPath || busy;
+    if (openButton) openButton.disabled = !context || !context.projectPath || !currentProjectSetup() || busy;
     var handoffButton = element("handoffButton");
-    if (handoffButton) handoffButton.disabled = !projectState || !projectState.initialized || busy || pendingCount > 0 || reviewCount > 0 || Boolean(projectState.pendingTransaction) || Boolean(projectState.pendingProjectSave) || Boolean(activePanelError) || Boolean(unresolved && unresolved.length);
+    if (handoffButton) handoffButton.disabled = !projectState || !currentProjectSetup() || !projectState.initialized || busy || pendingCount > 0 || reviewCount > 0 || Boolean(projectState.pendingTransaction) || Boolean(projectState.pendingProjectSave) || Boolean(activePanelError) || Boolean(unresolved && unresolved.length);
     var handoffBlockedByWork = busy || pendingCount > 0;
     var handoffBlockedByProblem = reviewCount > 0 || Boolean(projectState && (projectState.pendingTransaction || projectState.pendingProjectSave)) || Boolean(activePanelError) || Boolean(unresolved && unresolved.length);
-    setText("handoffHint", handoffBlockedByWork
-      ? "素材整理完成后才能交接。"
-      : handoffBlockedByProblem
-        ? "先完成上面的处理，才能完成交接。"
-        : "完成后，之后识别到的素材会进入下一个文件夹。");
+    setText("handoffHint", !currentProjectSetup()
+      ? "先开始整理此工程，再使用交接文件夹。"
+      : handoffBlockedByWork
+        ? "素材整理完成后才能交接。"
+        : handoffBlockedByProblem
+          ? "先完成上面的处理，才能完成交接。"
+          : "完成后，之后识别到的素材会进入下一个文件夹。");
     var folderMessage = element("folderActionMessage");
     if (folderMessage) {
       folderMessage.hidden = !folderActionMessage;
@@ -798,6 +906,7 @@
 
   async function refreshContext(options) {
     var refreshOptions = options || {};
+    machineSettings = loadMachineSettings();
     var next = await Premiere.activeContext(ppro);
     var changed = !context || !next || context.identity !== next.identity || context.workspaceRoot !== next.workspaceRoot;
     if (!changed && refreshOptions.force !== true && !stateReloadRequired) return context;
@@ -831,6 +940,11 @@
     reviewCount = 0;
     reviewItems = [];
     lastProtectedCount = 0;
+    outsideMediaCount = 0;
+    outsideCollectCount = 0;
+    outsideReviewCount = 0;
+    outsideMediaBytes = 0;
+    outsideUnreadableCount = 0;
     if (projectState && (projectState.pendingTransaction || projectState.pendingProjectSave || storageWarning || !currentProtectionSetup())) setMachineSetting("auto", false);
     if (projectState && unresolvedProtectedLibraries().length) setMachineSetting("auto", false);
     if (projectState && State.needsCollectionPolicyAcceptance(projectState)) setMachineSetting("auto", false);
@@ -964,6 +1078,12 @@
   }
 
   async function processGroup(group, lifecycleGeneration) {
+    machineSettings = loadMachineSettings();
+    if (!currentProjectSetup() || !currentAutoSetting()) {
+      var disabledError = new Error("当前工程尚未开启自动整理");
+      disabledError.code = "MATERIAL_BATCH_PROJECT_NOT_ENABLED";
+      throw disabledError;
+    }
     var sourcePath = group.mediaPath;
     var batch = State.currentBatch(projectState);
     busy = true;
@@ -1073,6 +1193,12 @@
   }
 
   async function applyExistingMapping(group, decision) {
+    machineSettings = loadMachineSettings();
+    if (!currentProjectSetup() || !currentAutoSetting()) {
+      var disabledError = new Error("当前工程尚未开启自动整理，历史位置不会自动补链");
+      disabledError.code = "MATERIAL_BATCH_PROJECT_NOT_ENABLED";
+      throw disabledError;
+    }
     var mapping = decision.mapping;
     var targetPath = targetPathForMapping(mapping);
     if (Core.samePath(group.mediaPath, targetPath)) return false;
@@ -1202,7 +1328,7 @@
 
   async function scanUnlocked(options) {
     var scanOptions = options || {};
-    if (scanOptions.skipRefresh !== true) await refreshContext({ force: scanOptions.forceContext === true });
+    if (scanOptions.skipRefresh !== true) await refreshContext({ force: true });
     if (!context || !context.projectPath || !projectState) {
       render();
       return { ok: false, error: "没有已保存的活动工程" };
@@ -1258,10 +1384,16 @@
       reviewCount = 0;
       reviewItems = [];
       lastProtectedCount = 0;
+      outsideMediaCount = 0;
+      outsideCollectCount = 0;
+      outsideReviewCount = 0;
+      outsideMediaBytes = 0;
+      outsideUnreadableCount = 0;
       Premiere.assertCompleteInventory(inventory);
       var classifications = groups.map(function (group) {
         return Core.classifyMediaPath(group.mediaPath, {
           mediaRoot: mediaRoot(),
+          workspaceRoot: context.workspaceRoot,
           protectedRoots: workspaceProtectedMappings(),
         });
       });
@@ -1270,14 +1402,24 @@
       var observedAt = Date.now();
       for (var fingerprintIndex = 0; fingerprintIndex < groups.length; fingerprintIndex += 1) {
         var fingerprintKind = classifications[fingerprintIndex].kind;
+        if (fingerprintKind === "protected") lastProtectedCount += 1;
         if (["collect", "review"].indexOf(fingerprintKind) < 0) continue;
+        outsideMediaCount += 1;
+        if (fingerprintKind === "collect") outsideCollectCount += 1;
+        else outsideReviewCount += 1;
         try {
           var fingerprintStat = await fs.lstat(groups[fingerprintIndex].mediaPath);
           groups[fingerprintIndex].sourceFingerprint = typeof fingerprintStat.isFile === "function" && fingerprintStat.isFile()
             ? Transaction.fingerprintFromStat(fingerprintStat)
             : null;
+          if (groups[fingerprintIndex].sourceFingerprint) {
+            outsideMediaBytes += Transaction.statSize(fingerprintStat);
+          } else {
+            outsideUnreadableCount += 1;
+          }
         } catch (fingerprintError) {
           groups[fingerprintIndex].sourceFingerprint = null;
+          outsideUnreadableCount += 1;
         }
         if (fingerprintKind === "collect") {
           observedCollectionPaths.push(groups[fingerprintIndex].mediaPath);
@@ -1289,6 +1431,33 @@
         }
       }
       stabilityTracker.retain(observedCollectionPaths);
+      groups.forEach(function (group, index) {
+        var classification = classifications[index];
+        if (classification.kind !== "review") return;
+        addReviewItem({
+          kind: "review",
+          sourcePath: group.mediaPath,
+          filename: Core.basename(group.mediaPath),
+          type: "整组素材",
+          reason: classification.reason,
+          note: "插件不会移动此项。要留在原位，请把所在文件夹加入“不搬动文件夹”；要随工程交接，请完整搬移关联文件夹，在 Premiere 中重新链接后再检查。",
+          revealPath: Core.dirname(group.mediaPath),
+          actions: [["reveal", "打开所在位置", "secondary"], ["retry", "重新检查", "secondary"]],
+        });
+      });
+
+      // 未明确开启或已经暂停时只做内存统计。禁止写整理记录、补链、保存工程或移动文件。
+      if (!currentProjectSetup() || !currentAutoSetting() || State.needsCollectionPolicyAcceptance(projectState)) {
+        pendingCount = outsideCollectCount;
+        render();
+        return {
+          ok: true,
+          initialized: projectState.initialized,
+          pendingCount: pendingCount,
+          reviewCount: reviewCount,
+          readOnly: true,
+        };
+      }
 
       if (!projectState.initialized) {
         if (scanOptions.initializeCollection === true) {
@@ -1309,34 +1478,8 @@
         var group = groups[index];
         var classification = classifications[index];
         var key = group.key;
-        var decision = await mappingDecision(group);
-        if (decision.kind.indexOf("mapping-") === 0) {
-          if (recordReview(group, decision.kind, mappingReview(group, decision), {
-            targetRelativePath: decision.mapping && decision.mapping.targetRelativePath || "",
-          })) dirtyState = true;
-          continue;
-        }
-
-        if (decision.kind === "match") {
-          var mapped = await applyExistingMapping(group, decision);
-          if (!mapped || mapped.applied !== true) {
-            var changedDecision = mapped && mapped.decision ? mapped.decision : {
-              kind: "mapping-target-unavailable",
-              mapping: decision.mapping,
-              targetPath: decision.targetPath,
-            };
-            if (recordReview(group, changedDecision.kind, mappingReview(group, changedDecision), {
-              targetRelativePath: changedDecision.mapping && changedDecision.mapping.targetRelativePath || "",
-            })) dirtyState = true;
-          } else {
-            dirtyState = true;
-          }
-          continue;
-        }
-
         var known = projectState.knownMedia[key];
         if (classification.kind === "protected") {
-          lastProtectedCount += 1;
           if (!projectState.protectedLibraries.some(function (library) { return library.libraryId === classification.libraryId; })) {
             var localLibrary = libraryForMapping(classification.libraryId);
             projectState = State.addProtectedLibrary(projectState, classification.libraryId, localLibrary ? localLibrary.label : "共享素材库", new Date());
@@ -1362,10 +1505,35 @@
           if (recordReview(group, "review", {
             type: "整组素材",
             reason: classification.reason,
-            note: "请将所在文件夹加入“不搬动文件夹”，或在 Premiere 中手动重新链接后再检查。",
+            note: "插件不会移动此项。要留在原位，请把所在文件夹加入“不搬动文件夹”；要随工程交接，请完整搬移关联文件夹，在 Premiere 中重新链接后再检查。",
             revealPath: Core.dirname(group.mediaPath),
             actions: [["reveal", "打开所在位置", "secondary"], ["retry", "重新检查", "secondary"]],
           })) dirtyState = true;
+          continue;
+        }
+
+        var decision = await mappingDecision(group);
+        if (decision.kind.indexOf("mapping-") === 0) {
+          if (recordReview(group, decision.kind, mappingReview(group, decision), {
+            targetRelativePath: decision.mapping && decision.mapping.targetRelativePath || "",
+          })) dirtyState = true;
+          continue;
+        }
+
+        if (decision.kind === "match") {
+          var mapped = await applyExistingMapping(group, decision);
+          if (!mapped || mapped.applied !== true) {
+            var changedDecision = mapped && mapped.decision ? mapped.decision : {
+              kind: "mapping-target-unavailable",
+              mapping: decision.mapping,
+              targetPath: decision.targetPath,
+            };
+            if (recordReview(group, changedDecision.kind, mappingReview(group, changedDecision), {
+              targetRelativePath: changedDecision.mapping && changedDecision.mapping.targetRelativePath || "",
+            })) dirtyState = true;
+          } else {
+            dirtyState = true;
+          }
           continue;
         }
 
@@ -1550,6 +1718,7 @@
       render();
       return;
     }
+    var expectedIdentity = context.identity;
     if (enabled && !currentProtectionSetup()) {
       setMachineSetting("auto", false);
       setSettingsMessage("info", "请先确认哪些文件夹需要保持原位。");
@@ -1568,6 +1737,9 @@
       return;
     }
     await refreshProtectedMappingStatus();
+    if (!(await Premiere.contextStillActive(ppro, expectedIdentity))) {
+      throw new Error("设置期间活动工程已切换，请在当前工程中重新操作");
+    }
     if (enabled && unresolvedProtectedLibraries().length) {
       setMachineSetting("auto", false);
       panelError = "请先在设置中重新选择交接过来的共享素材文件夹";
@@ -1575,15 +1747,21 @@
       return;
     }
 
+    var firstActivation = enabled && !currentProjectSetup();
     if (enabled && State.needsCollectionPolicyAcceptance(projectState)) {
       projectState = State.acceptCollectionPolicy(projectState, new Date());
-      projectState = State.addActivity(projectState, "ok", "已确认整理工程现有素材", new Date(), {
-        summary: "不搬动文件夹仍保持原位",
+      projectState = State.addActivity(projectState, "ok", "已确认当前整理规则", new Date(), {
+        summary: "工程文件夹内和不搬动名单中的素材保持原位",
       });
       await persistState();
+      if (!(await Premiere.contextStillActive(ppro, expectedIdentity))) {
+        throw new Error("确认规则期间活动工程已切换，请在当前工程中重新操作");
+      }
     }
 
-    setMachineSetting("auto", enabled);
+    setMachineSettings(enabled
+      ? { projectSetup: true, auto: true }
+      : { auto: false });
     if (!enabled) {
       stopMonitor(false);
       projectState = State.addActivity(projectState, "warn", "自动整理已暂停", new Date());
@@ -1593,12 +1771,18 @@
     }
 
     panelError = "";
-    var initialScan = await scanUnlocked({ initializeCollection: !projectState.initialized });
+    var initialScan = await scanUnlocked({ initializeCollection: !projectState.initialized, skipRefresh: true });
     if (!initialScan || !initialScan.ok) {
       setMachineSetting("auto", false);
       stopMonitor(false);
       render();
       return;
+    }
+    if (firstActivation) {
+      projectState = State.addActivity(projectState, "ok", "已为此工程开启自动整理", new Date(), {
+        summary: Core.basename(context.projectPath),
+      });
+      await persistState();
     }
     if (!projectState.pendingTransaction && !projectState.pendingProjectSave && currentAutoSetting()) {
       syncMonitor();
@@ -1608,10 +1792,13 @@
   }
 
   function setAutomatic(enabled) {
-    return operationQueue.run(function () {
+    return operationQueue.run(async function () {
+      await refreshContext({ force: true });
       return setAutomaticUnlocked(enabled);
     }).catch(function (error) {
       reportRuntimeError("开启或暂停自动整理失败", error);
+      try { setMachineSetting("auto", false); } catch (settingsError) {}
+      stopMonitor(false);
       panelError = userFacingRuntimeError(error, "无法更改自动整理状态，请重新检查当前工程后再试。");
       render();
     });
@@ -1627,7 +1814,7 @@
     folderActionMessage = "";
     await operationQueue.run(async function () {
       await refreshContext();
-      if (!context || !projectState) throw new Error("没有可打开的素材文件夹");
+      if (!context || !projectState || !currentProjectSetup()) throw new Error("请先开始整理当前工程");
       await ensureBatchDirectories();
       await openDirectory(batchPath(), "打开当前素材文件夹");
       render();
@@ -1866,7 +2053,7 @@
     if (!(await confirmHandoff())) return;
     await operationQueue.run(async function () {
       await refreshContext();
-      if (!context || !projectState || !projectState.initialized) throw new Error("当前工程还没有开启自动整理");
+      if (!context || !projectState || !currentProjectSetup() || !projectState.initialized) throw new Error("当前工程还没有开启自动整理");
       busy = true;
       busyStage = "handoff";
       render();
@@ -1963,12 +2150,13 @@
       var rootPath = Core.toFileSystemPath(folder.nativePath);
       await validateChosenProtectedFolder(rootPath, existingLibraryId);
       await operationQueue.run(async function () {
-        await refreshContext();
+        await refreshContext({ force: true });
         if (!context || context.identity !== expectedIdentity || !projectState) {
           throw new Error("选择文件夹期间活动工程已切换，请重新选择");
         }
         var blockReason = protectedSettingsBlockReason();
         if (blockReason) throw new Error(blockReason);
+        await validateChosenProtectedFolder(rootPath, existingLibraryId);
         var previousSettings = JSON.parse(JSON.stringify(machineSettings));
         var previousState = projectState;
         try {
@@ -1988,12 +2176,15 @@
           selectedLabel = label;
           machineSettings.protectedMappings = machineSettings.protectedMappings.filter(function (mapping) { return mapping.libraryId !== libraryId; });
           machineSettings.protectedMappings.push({ libraryId: libraryId, label: label, rootPath: rootPath });
+          projectState = State.bumpProtectedConfigRevision(projectState, new Date());
+          pauseWorkspaceProjectsInMemory();
           saveMachineSettings();
           projectState = State.addProtectedLibrary(projectState, libraryId, label, new Date());
           projectState = State.addActivity(projectState, "ok", "这里的素材不会移动：" + label, new Date(), { summary: rootPath });
           await persistState();
         } catch (error) {
           machineSettings = previousSettings;
+          pauseWorkspaceProjectsInMemory();
           projectState = previousState;
           try { saveMachineSettings(); } catch (settingsRollbackError) {}
           throw error;
@@ -2002,9 +2193,10 @@
         if (unresolvedProtectedLibraries().length) setMachineSetting("auto", false);
         panelError = "";
       });
-      setSettingsMessage("success", existingLibraryId
+      setSettingsMessage("success", (existingLibraryId
         ? "已更新“" + selectedLabel + "”在这台电脑上的位置。"
-        : "已添加“" + selectedLabel + "”，这里的素材不会移动。");
+        : "已添加“" + selectedLabel + "”，这里的素材不会移动。")
+        + " 同一工程文件夹内的所有工程已暂停，请分别确认名单后再开启。");
     } catch (error) {
       try { await refreshProtectedMappingStatus(); } catch (validationError) {}
       panelError = (existingLibraryId ? "重新选择失败：" : "添加失败：") + protectedFolderErrorMessage(error);
@@ -2026,23 +2218,26 @@
     if (!library) return;
     var mapping = machineSettings.protectedMappings.find(function (candidate) { return candidate.libraryId === libraryId; });
     var pathLine = mapping && mapping.rootPath ? "\n文件夹：" + Core.toFileSystemPath(mapping.rootPath) : "";
-    var approved = typeof window.confirm !== "function" || window.confirm("从不搬动名单移除“" + library.label + "”？" + pathLine + "\n\n不会删除磁盘文件夹或里面的素材。为防止素材马上被搬走，自动整理会暂停。");
+    var approved = typeof window.confirm !== "function" || window.confirm("从不搬动名单移除“" + library.label + "”？" + pathLine + "\n\n不会删除磁盘文件夹或里面的素材。同一工程文件夹内的所有工程都会暂停。");
     if (!approved) return;
     setSettingsMessage("", "");
     var expectedIdentity = context && context.identity;
     await operationQueue.run(async function () {
-      await refreshContext();
+      await refreshContext({ force: true });
       if (!context || context.identity !== expectedIdentity || !projectState) {
         throw new Error("移除文件夹期间活动工程已切换，请重新操作");
       }
+      var currentLibrary = projectState.protectedLibraries.find(function (candidate) { return candidate.libraryId === libraryId; });
+      if (!currentLibrary) throw new Error("不搬动名单已经变化，请重新打开管理页后再操作");
       var blockReason = protectedSettingsBlockReason();
       if (blockReason) throw new Error(blockReason);
       stopMonitor(false);
-      setMachineSetting("auto", false);
+      pauseWorkspaceProjects();
       var previousState = projectState;
       try {
         projectState = State.removeProtectedLibrary(projectState, libraryId, new Date());
-        projectState = State.addActivity(projectState, "warn", "已从不搬动名单移除：" + library.label, new Date());
+        projectState = State.bumpProtectedConfigRevision(projectState, new Date());
+        projectState = State.addActivity(projectState, "warn", "已从不搬动名单移除：" + currentLibrary.label, new Date());
         await persistState();
       } catch (error) {
         projectState = previousState;
@@ -2050,7 +2245,7 @@
       }
       await refreshProtectedMappingStatus();
       panelError = "";
-      setSettingsMessage("success", "已从名单移除“" + library.label + "”。没有删除磁盘文件或素材；自动整理已暂停，确认后再重新开启。");
+      setSettingsMessage("success", "已从名单移除“" + currentLibrary.label + "”。没有删除磁盘文件或素材；同一工程文件夹内的所有工程已暂停，请分别确认名单后再开启。");
     }).catch(function (error) {
       reportRuntimeError("从不搬动名单移除文件夹失败", error);
       panelError = "移除失败：" + userFacingRuntimeError(error, "无法从名单移除这个文件夹，请重新检查后再试。")
@@ -2064,21 +2259,33 @@
 
   async function completeProtectionSetup() {
     var failureStage = "validation";
+    var expectedIdentity = context && context.identity;
     await operationQueue.run(async function () {
-      await refreshContext();
+      await refreshContext({ force: true });
+      if (!expectedIdentity || !context || context.identity !== expectedIdentity || !projectState) {
+        throw new Error("确认名单期间活动工程已切换，请在当前工程中重新操作");
+      }
       var blockReason = protectedSettingsBlockReason();
       if (blockReason) throw new Error(blockReason);
       await refreshProtectedMappingStatus();
+      if (!(await Premiere.contextStillActive(ppro, expectedIdentity))) {
+        throw new Error("确认名单期间活动工程已切换，请在当前工程中重新操作");
+      }
       if (unresolvedProtectedLibraries().length) {
         throw new Error("请先重新选择所有需要连接的不搬动文件夹。");
       }
       // 空名单首次确认时也要先固定素材空间编号，关闭面板后才能继续复用本机确认。
       failureStage = "project-state";
       await persistState();
+      if (!(await Premiere.contextStillActive(ppro, expectedIdentity))) {
+        throw new Error("保存名单期间活动工程已切换，请在当前工程中重新操作");
+      }
       failureStage = "machine-settings";
       setMachineSettings({ protection: true, auto: false });
       panelError = "";
-      setSettingsMessage("success", "不搬动名单已确认，现在可以开启自动整理。");
+      setSettingsMessage("success", "这份不搬动名单已确认，现在可以开始整理此工程。");
+      var scanResult = await scanUnlocked({ skipRefresh: true });
+      if (!scanResult || !scanResult.ok) throw new Error(scanResult && scanResult.error || "无法检查当前工程素材");
     }).then(function () {
       render();
       if (typeof window.dispatchEvent === "function" && typeof CustomEvent === "function") {
@@ -2095,6 +2302,7 @@
     if (typeof window.dispatchEvent === "function" && typeof CustomEvent === "function") {
       window.dispatchEvent(new CustomEvent("batch-collector:open-settings"));
     }
+    return requestScan({ forceContext: true });
   }
 
   function openActivityLog() {
@@ -2217,9 +2425,9 @@
   async function handleStateAction() {
     var action = element("stateAction");
     var intent = action ? action.dataset.intent : "";
-    if (intent === "开启自动整理" || intent === "继续自动整理" || intent === "开始整理现有素材") return setAutomatic(true);
+    if (intent === "开始整理此工程" || intent === "开启自动整理" || intent === "继续自动整理" || intent === "开始整理现有素材") return setAutomatic(true);
     if (intent === "设置不搬动文件夹" || intent === "选择文件夹" || intent === "查看不搬动文件夹") return openSettingsPage();
-    if (intent === "查看待确认素材") return openReviewList();
+    if (intent === "查看需处理素材" || intent === "查看待确认素材") return openReviewList();
     if (intent === "查看最近记录") return openActivityLog();
     if (intent === "检查上次整理") return recoverPendingTransaction();
     return requestScan({ forceContext: true });

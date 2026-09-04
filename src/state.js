@@ -11,7 +11,7 @@
   "use strict";
 
   var SCHEMA_VERSION = 1;
-  var COLLECTION_POLICY_VERSION = 2;
+  var COLLECTION_POLICY_VERSION = 3;
   var HISTORY_LIMIT = 200;
   var TRANSACTION_LIMIT = 100;
 
@@ -45,6 +45,7 @@
       mediaFolderName: "素材",
       initialized: false,
       collectionPolicyVersion: COLLECTION_POLICY_VERSION,
+      protectedConfigRevision: 1,
       currentBatchIndex: 1,
       batches: [initialBatch(now)],
       protectedLibraries: [],
@@ -133,6 +134,10 @@
     if (!Array.isArray(raw.batches) || !raw.batches.length) return false;
     if (!isRecord(raw.projects) || !isRecord(raw.knownMedia) || !isRecord(raw.pathMappings)) return false;
     if (!Array.isArray(raw.protectedLibraries) || !Array.isArray(raw.transactions) || !Array.isArray(raw.activity)) return false;
+    if (Object.prototype.hasOwnProperty.call(raw, "protectedConfigRevision")) {
+      var protectedRevision = Number(raw.protectedConfigRevision);
+      if (!Number.isFinite(protectedRevision) || protectedRevision < 1 || Math.floor(protectedRevision) !== protectedRevision) return false;
+    }
     if (raw.pendingTransaction != null && !isRecord(raw.pendingTransaction)) return false;
     if (raw.pendingProjectSave != null) {
       if (!isRecord(raw.pendingProjectSave)) return false;
@@ -175,6 +180,7 @@
     state.initialized = raw.initialized === true;
     state.collectionPolicyVersion = Math.max(1, Math.floor(Number(raw.collectionPolicyVersion)
       || (state.initialized ? 1 : COLLECTION_POLICY_VERSION)));
+    state.protectedConfigRevision = Math.max(1, Math.floor(Number(raw.protectedConfigRevision) || 1));
     state.batches = Array.isArray(raw.batches) && raw.batches.length
       ? raw.batches.map(function (batch) { return validBatch(batch, now); })
       : [initialBatch(now)];
@@ -630,6 +636,12 @@
     return touch(next, at);
   }
 
+  function bumpProtectedConfigRevision(state, at) {
+    var next = clone(state);
+    next.protectedConfigRevision = Math.max(1, Math.floor(Number(next.protectedConfigRevision) || 1)) + 1;
+    return touch(next, at);
+  }
+
   function updateMappingTargetFingerprint(state, sourcePath, targetRelativePath, targetFingerprint, at) {
     var next = clone(state);
     var sourceKey = Core.normalizePathForComparison(sourcePath);
@@ -655,6 +667,7 @@
     addProtectedLibrary: addProtectedLibrary,
     beginProjectSave: beginProjectSave,
     beginTransaction: beginTransaction,
+    bumpProtectedConfigRevision: bumpProtectedConfigRevision,
     commitTransaction: commitTransaction,
     createState: createState,
     currentBatch: currentBatch,

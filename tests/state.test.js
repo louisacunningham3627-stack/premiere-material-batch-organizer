@@ -13,6 +13,39 @@ test("创建一个共享初始批次且不复制 .prproj", () => {
   assert.equal(State.currentBatchPath(state, "I:\\剪辑\\新手"), "I:\\剪辑\\新手\\素材\\2026年09月04日添加素材");
 });
 
+test("旧状态缺少不搬动名单版本时按版本 1 恢复", () => {
+  const legacy = State.createState("I:\\项目", now);
+  delete legacy.protectedConfigRevision;
+
+  assert.equal(State.validateStoredState(legacy), true);
+  assert.equal(State.hydrateState(legacy, "I:\\项目", now).protectedConfigRevision, 1);
+});
+
+test("不搬动名单版本每次递增且不修改原状态", () => {
+  const original = State.createState("I:\\项目", now);
+  const next = State.bumpProtectedConfigRevision(original, new Date(now.getTime() + 1000));
+  const afterNext = State.bumpProtectedConfigRevision(next, new Date(now.getTime() + 2000));
+
+  assert.equal(original.protectedConfigRevision, 1);
+  assert.equal(next.protectedConfigRevision, 2);
+  assert.equal(afterNext.protectedConfigRevision, 3);
+  assert.notEqual(next, original);
+  assert.notEqual(afterNext, next);
+});
+
+test("显式无效的不搬动名单版本会关闭状态恢复", () => {
+  [0, -1, 1.5, Infinity, "not-a-revision"].forEach((revision) => {
+    const raw = State.createState("I:\\项目", now);
+    raw.protectedConfigRevision = revision;
+    assert.equal(State.validateStoredState(raw), false, `revision=${String(revision)}`);
+    assert.throws(
+      () => State.hydrateState(raw, "I:\\项目", now),
+      (error) => error && error.code === "MATERIAL_BATCH_STATE_INVALID",
+      `revision=${String(revision)}`,
+    );
+  });
+});
+
 test("多个 .prproj 名称会注册到同一素材空间", () => {
   let state = State.createState("I:\\剪辑\\新手", now);
   state = State.registerProject(state, "I:\\剪辑\\新手\\新手-v1.prproj", "新手-v1.prproj", now);

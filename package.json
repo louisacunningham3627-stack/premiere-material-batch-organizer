@@ -1,6 +1,6 @@
 {
   "name": "premiere-material-batch-organizer",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "private": true,
   "description": "Premiere 素材批次自动整理插件",
   "type": "commonjs",

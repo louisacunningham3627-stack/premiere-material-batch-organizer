@@ -361,6 +361,7 @@
     }
     if (isProjectFile(nativePath)) return { kind: "ignored", reason: "Premiere 工程文件永不整理" };
     if (config.mediaRoot && isPathInside(nativePath, config.mediaRoot)) return { kind: "managed", reason: "已在素材根目录" };
+    if (config.workspaceRoot && isPathInside(nativePath, config.workspaceRoot)) return { kind: "managed", reason: "已在工程文件夹内" };
 
     var protectedRoots = Array.isArray(config.protectedRoots) ? config.protectedRoots : [];
     for (var index = 0; index < protectedRoots.length; index += 1) {

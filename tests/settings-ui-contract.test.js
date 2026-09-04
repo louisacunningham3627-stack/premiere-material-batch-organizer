@@ -39,6 +39,7 @@ test("主页提供明确的管理入口，并把名单数量作为单独信息�
 test("设置页明确当前共享范围、连接状态和每项操作", () => {
   assert.match(html, /当前工程文件夹/);
   assert.match(html, /同一文件夹里的所有 Premiere 工程共用这份名单/);
+  assert.match(html, /名单改变后，每个工程都要先确认新名单，再单独点击“开始整理此工程”/);
   assert.match(source, /还没有添加文件夹/);
   assert.match(source, /statusLabel\.textContent = status\.valid \? "可正常使用" : "需要重新选择"/);
   assert.match(source, /mapAction\.textContent = status\.valid \? "更换文件夹" : "选择本机文件夹"/);
@@ -54,15 +55,17 @@ test("设置操作会在当前页反馈，缺少工程或忙碌时不会静默�
   assert.match(source, /素材正在整理，完成后才能修改名单/);
   assert.match(source, /projectState\.pendingTransaction \|\| projectState\.pendingProjectSave/);
   assert.match(source, /请先完成“检查上次整理”，再修改不搬动文件夹/);
-  assert.match(source, /setSettingsMessage\("success", existingLibraryId/);
+  assert.match(source, /同一工程文件夹内的所有工程已暂停，请分别确认名单后再开启/);
   assert.match(source, /setSettingsMessage\("error", panelError\)/);
   assert.match(source, /var initialBlockReason = protectedSettingsBlockReason\(\)/);
+  assert.match(source, /function openSettingsPage\(\)[\s\S]{0,260}requestScan\(\{ forceContext: true \}\)/);
+  assert.match(html, /openSettingsPage\(\);[\s\S]{0,120}batch-collector:refresh/);
 });
 
 test("移除前后都明确磁盘文件不会删除，而且自动整理会暂停", () => {
-  assert.match(source, /从不搬动名单移除“[\s\S]{0,360}不会删除磁盘文件夹或里面的素材[\s\S]{0,120}自动整理会暂停/);
-  assert.match(source, /setMachineSetting\("auto", false\)/);
-  assert.match(source, /已从名单移除“[\s\S]{0,260}没有删除磁盘文件或素材；自动整理已暂停/);
+  assert.match(source, /从不搬动名单移除“[\s\S]{0,360}不会删除磁盘文件夹或里面的素材[\s\S]{0,120}所有工程都会暂停/);
+  assert.match(source, /pauseWorkspaceProjects\(\)/);
+  assert.match(source, /已从名单移除“[\s\S]{0,260}没有删除磁盘文件或素材；同一工程文件夹内的所有工程已暂停/);
 });
 
 test("名单确认会原子保存本机设置，并按失败阶段显示固定中文提示", () => {
@@ -81,10 +84,16 @@ test("添加范围拒绝工程上级目录、素材目录和父子重叠目录",
   assert.match(source, /MATERIAL_BATCH_PROTECTED_FOLDER_OVERLAP/);
   assert.match(source, /已有路径：/);
   assert.match(source, /本次选择：/);
+  assert.match(source, /refreshContext\(\{ force: true \}\)[\s\S]{0,360}validateChosenProtectedFolder\(rootPath, existingLibraryId\)/);
+  assert.match(source, /var currentLibrary = projectState\.protectedLibraries\.find/);
+  assert.match(source, /if \(!currentLibrary\) throw new Error\("不搬动名单已经变化/);
 });
 
 test("预览提供设置页入口，返回只切换页面而不触发交接", () => {
   assert.match(previewHtml, /data-view="settings">不搬动文件夹/);
+  assert.match(html, /id="closeSettingsButton"[^>]*aria-label="返回整理界面"/);
+  assert.match(html, /qs\('closeSettingsButton'\)\.addEventListener\('click', closeSettingsPage\)/);
+  assert.match(html, /window\.addEventListener\('batch-collector:close-settings', closeSettingsPage\)/);
   assert.match(html, /qs\('panelRoot'\)\.hidden = true/);
   assert.match(html, /qs\('panelRoot'\)\.hidden = false/);
   assert.match(html, /qs\('settingsScroll'\)\.scrollTop = 0/);
@@ -122,7 +131,8 @@ test("主页用文字说明当前工程、整理开关、交接文件夹和重�
 test("首次使用先确认不搬动文件夹，再允许开启自动整理", () => {
   assert.match(html, /id="autoCollectControl"/);
   assert.match(html, /id="finishProtectionButton"[\s\S]*?没有需要不搬动的文件夹，继续/);
-  assert.match(source, /protectedSetupByMediaSpace/);
+  assert.match(source, /protectedRevisionByProject/);
+  assert.match(source, /machine\.v2/);
   assert.match(source, /body\.dataset\.onboarding = onboardingStage/);
   assert.match(source, /title: "先设置不搬动文件夹"/);
   assert.match(source, /action: "设置不搬动文件夹"/);

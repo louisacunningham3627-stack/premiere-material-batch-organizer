@@ -12,11 +12,25 @@ const ScanPolicy = require("../src/scan-policy");
 const Storage = require("../src/storage");
 
 const mainSource = fs.readFileSync(require.resolve("../src/main.js"), "utf8");
+const MACHINE_SETTINGS_V1_KEY = "hechao.material-batch-organizer.machine.v1";
+const MACHINE_SETTINGS_V2_KEY = "hechao.material-batch-organizer.machine.v2";
 
 function deferred() {
   let resolve;
   const promise = new Promise((nextResolve) => { resolve = nextResolve; });
   return { promise, resolve };
+}
+
+function createSharedLocalStorage(entries = []) {
+  return {
+    values: new Map(entries),
+    setCalls: 0,
+    getItem(key) { return this.values.has(key) ? this.values.get(key) : null; },
+    setItem(key, value) {
+      this.setCalls += 1;
+      this.values.set(key, String(value));
+    },
+  };
 }
 
 function createDomElement(tagName = "div") {
@@ -226,6 +240,8 @@ function createProtectedFolderHarness(folderError, localSettingsError, stateWrit
   const reviewCountLabel = testElement();
   const reviewList = createDomElement("div");
   const reviewSection = testElement();
+  const fileCount = testElement();
+  const fileSize = testElement();
   const elements = new Map([
     ["addProtectedButton", addButton],
     ["finishProtectionButton", finishButton],
@@ -246,11 +262,13 @@ function createProtectedFolderHarness(folderError, localSettingsError, stateWrit
     ["reviewCountLabel", reviewCountLabel],
     ["reviewList", reviewList],
     ["reviewSection", reviewSection],
+    ["fileCount", fileCount],
+    ["fileSize", fileSize],
   ]);
   const document = createDocument((id) => elements.get(id) || null);
   const entrypoints = {};
   const windowListeners = new Map();
-  const context = {
+  const context = harnessOptions.context || {
     project: { path: "E:\\项目\\测试工程.prproj", name: "测试工程.prproj" },
     projectPath: "E:\\项目\\测试工程.prproj",
     projectName: "测试工程.prproj",
@@ -258,14 +276,23 @@ function createProtectedFolderHarness(folderError, localSettingsError, stateWrit
     workspaceRoot: "E:\\项目",
   };
   const selectedFolder = harnessOptions.selectedFolder || { nativePath: "\\\\?\\E:\\共享库\\后期包", name: "后期包" };
+  const stateStore = harnessOptions.stateStore || null;
   const lstatPaths = [];
   const mkdirPaths = [];
   const shellOpenCalls = [];
   const fsMutationCalls = [];
   const confirmMessages = [];
-  let latestState = harnessOptions.initialState ? JSON.parse(JSON.stringify(harnessOptions.initialState)) : null;
+  let latestState = stateStore && stateStore.value
+    ? JSON.parse(JSON.stringify(stateStore.value))
+    : harnessOptions.initialState
+      ? JSON.parse(JSON.stringify(harnessOptions.initialState))
+      : null;
+  let stateReadCalls = 0;
   let stateWriteCalls = 0;
   let inventoryCount = 0;
+  let inventoryEntries = Array.isArray(harnessOptions.inventoryEntries)
+    ? harnessOptions.inventoryEntries
+    : [];
   const diagnostics = [];
   const fsMock = {
     async lstat(nativePath) {
@@ -276,7 +303,7 @@ function createProtectedFolderHarness(folderError, localSettingsError, stateWrit
         throw error;
       }
       const mediaRootPath = Core.joinNativePath(context.workspaceRoot, "素材");
-      if (!harnessOptions.initialState && Core.samePath(nativePath, mediaRootPath)) {
+      if (!latestState && Core.samePath(nativePath, mediaRootPath)) {
         if (harnessOptions.missingStateMediaRootError) throw harnessOptions.missingStateMediaRootError;
         if (harnessOptions.missingStateMediaRootExists) {
           return { isDirectory: () => true, isFile: () => false };
@@ -305,31 +332,48 @@ function createProtectedFolderHarness(folderError, localSettingsError, stateWrit
     isAlreadyExistsError: Storage.isAlreadyExistsError,
     statePath(root) { return `${root}\\.premiere-material-space.json`; },
     async readJsonWithBackup() {
-      return harnessOptions.initialState
-        ? { value: JSON.parse(JSON.stringify(harnessOptions.initialState)), missing: false, recovered: false, revision: "initial" }
+      stateReadCalls += 1;
+      const storedState = stateStore ? stateStore.value : latestState;
+      return storedState
+        ? {
+            value: JSON.parse(JSON.stringify(storedState)),
+            missing: false,
+            recovered: false,
+            revision: stateStore ? String(stateStore.revision || "initial") : "initial",
+          }
         : { missing: true, recovered: false, revision: null };
     },
     async writeJsonAtomic(_fs, _path, value) {
       stateWriteCalls += 1;
       if (stateWriteError && stateWriteCalls === (harnessOptions.stateWriteErrorAt || 2)) throw stateWriteError;
       latestState = JSON.parse(JSON.stringify(value));
+      if (stateStore) {
+        stateStore.value = JSON.parse(JSON.stringify(value));
+        stateStore.revision = "saved-" + stateWriteCalls;
+      }
       return { revision: `saved-${stateWriteCalls}` };
     },
   };
-  const localStorage = {
+  const localStorage = harnessOptions.sharedLocalStorage || {
     values: new Map(),
     setCalls: 0,
     getItem(key) { return this.values.has(key) ? this.values.get(key) : null; },
     setItem(key, value) {
       this.setCalls += 1;
-      if (localSettingsError && this.setCalls === 2) throw localSettingsError;
+      if (localSettingsError && this.setCalls === (harnessOptions.localSettingsErrorAt || 1)) throw localSettingsError;
       this.values.set(key, String(value));
     },
   };
   if (harnessOptions.initialMachineSettings) {
     localStorage.values.set(
-      "hechao.material-batch-organizer.machine.v1",
+      MACHINE_SETTINGS_V2_KEY,
       JSON.stringify(harnessOptions.initialMachineSettings)
+    );
+  }
+  if (harnessOptions.initialLegacyMachineSettings) {
+    localStorage.values.set(
+      MACHINE_SETTINGS_V1_KEY,
+      JSON.stringify(harnessOptions.initialLegacyMachineSettings)
     );
   }
   const window = {
@@ -337,6 +381,7 @@ function createProtectedFolderHarness(folderError, localSettingsError, stateWrit
     removeEventListener() {},
     confirm(message) {
       confirmMessages.push(String(message));
+      if (typeof harnessOptions.onConfirm === "function") harnessOptions.onConfirm(String(message));
       return harnessOptions.confirmResult !== false;
     },
     listeners: windowListeners,
@@ -345,7 +390,15 @@ function createProtectedFolderHarness(folderError, localSettingsError, stateWrit
     entrypoints: {
       setup(config) { Object.assign(entrypoints, config.panels.materialBatchOrganizer); },
     },
-    storage: { localFileSystem: { async getFolder() { return selectedFolder; } } },
+    storage: {
+      localFileSystem: {
+        async getFolder() {
+          return typeof harnessOptions.getFolder === "function"
+            ? harnessOptions.getFolder()
+            : selectedFolder;
+        },
+      },
+    },
     shell: {
       async openPath(nativePath, label) {
         shellOpenCalls.push([nativePath, label]);
@@ -373,11 +426,17 @@ function createProtectedFolderHarness(folderError, localSettingsError, stateWrit
     MaterialBatchRecovery: Recovery,
     MaterialBatchCoordination: Coordination,
     MaterialBatchPremiere: {
-      async activeContext() { return context; },
+      async activeContext() {
+        return typeof harnessOptions.activeContext === "function"
+          ? harnessOptions.activeContext()
+          : context;
+      },
       async inventoryProject() {
         inventoryCount += 1;
         return {
-          entries: Array.isArray(harnessOptions.inventoryEntries) ? harnessOptions.inventoryEntries : [],
+          entries: typeof harnessOptions.inventoryEntries === "function"
+            ? harnessOptions.inventoryEntries()
+            : inventoryEntries,
           warnings: Array.isArray(harnessOptions.inventoryWarnings) ? harnessOptions.inventoryWarnings : [],
         };
       },
@@ -393,7 +452,11 @@ function createProtectedFolderHarness(folderError, localSettingsError, stateWrit
         });
         return Array.from(groups.values());
       },
-      async contextStillActive() { return true; },
+      async contextStillActive(_ppro, expectedIdentity) {
+        return typeof harnessOptions.contextStillActive === "function"
+          ? harnessOptions.contextStillActive(expectedIdentity)
+          : true;
+      },
     },
     MaterialBatchStorage: storage,
     MaterialBatchScanPolicy: ScanPolicy,
@@ -416,6 +479,8 @@ function createProtectedFolderHarness(folderError, localSettingsError, stateWrit
     folderActionMessage,
     confirmMessages,
     diagnostics,
+    fileCount,
+    fileSize,
     fsMutationCalls,
     lstatPaths,
     mkdirPaths,
@@ -434,8 +499,10 @@ function createProtectedFolderHarness(folderError, localSettingsError, stateWrit
     stateDescription,
     stateTitle,
     window,
+    setInventoryEntries(entries) { inventoryEntries = Array.isArray(entries) ? entries : []; },
     get inventoryCount() { return inventoryCount; },
     get latestState() { return latestState; },
+    get stateReadCalls() { return stateReadCalls; },
     get stateWriteCalls() { return stateWriteCalls; },
   };
 }
@@ -561,7 +628,7 @@ function createHarness() {
   };
 }
 
-function createMappingHarness() {
+function createMappingHarness(options = {}) {
   const sourcePath = "C:\\Downloads\\mapped.mp4";
   const targetRelativePath = "素材\\001_初始素材\\mapped.mp4";
   const targetPath = `D:\\handoff\\${targetRelativePath}`;
@@ -662,10 +729,14 @@ function createMappingHarness() {
   };
   const localStorage = {
     values: new Map([[
-      "hechao.material-batch-organizer.machine.v1",
+      MACHINE_SETTINGS_V2_KEY,
       JSON.stringify({
-        autoByMediaSpace: {},
-        protectedSetupByMediaSpace: { [state.mediaSpaceId]: true },
+        schemaVersion: 2,
+        autoByProject: { [State.projectKey(projectPath)]: options.autoEnabled !== false },
+        projectSetupByProject: { [State.projectKey(projectPath)]: true },
+        protectedRevisionByProject: {
+          [State.projectKey(projectPath)]: Math.max(1, Number(state.protectedConfigRevision) || 1),
+        },
         protectedMappings: [],
       }),
     ]]),
@@ -887,6 +958,47 @@ async function settle() {
   await new Promise((resolve) => setImmediate(resolve));
 }
 
+function projectContext(workspaceRoot, fileName, projectOverrides = {}) {
+  const projectPath = Core.joinNativePath(workspaceRoot, fileName);
+  const project = Object.assign({
+    path: projectPath,
+    name: fileName,
+    async save() { return true; },
+  }, projectOverrides);
+  return {
+    project,
+    projectPath,
+    projectName: fileName,
+    identity: "path:" + Core.normalizePathForComparison(projectPath),
+    workspaceRoot,
+  };
+}
+
+function readableFile(size, mtimeMs) {
+  return {
+    isDirectory: () => false,
+    isFile: () => true,
+    size,
+    mtimeMs,
+    ctimeMs: mtimeMs,
+  };
+}
+
+function projectMachineSettings(state, projectPath, options = {}) {
+  const projectKey = State.projectKey(projectPath);
+  const projectSetup = options.projectSetup !== false;
+  const protectionConfirmed = options.protection !== false;
+  return {
+    schemaVersion: 2,
+    autoByProject: projectSetup ? { [projectKey]: options.auto !== false } : {},
+    projectSetupByProject: projectSetup ? { [projectKey]: true } : {},
+    protectedRevisionByProject: protectionConfirmed
+      ? { [projectKey]: Math.max(1, Number(state && state.protectedConfigRevision) || 1) }
+      : {},
+    protectedMappings: Array.isArray(options.protectedMappings) ? options.protectedMappings : [],
+  };
+}
+
 function protectedRemovalFixture(pendingKind = "") {
   const workspaceRoot = "E:\\项目";
   const projectPath = `${workspaceRoot}\\测试工程.prproj`;
@@ -930,14 +1042,12 @@ function protectedRemovalFixture(pendingKind = "") {
     firstId,
     secondId,
     initialState,
-    initialMachineSettings: {
-      autoByMediaSpace: { [initialState.mediaSpaceId]: true },
-      protectedSetupByMediaSpace: { [initialState.mediaSpaceId]: true },
+    initialMachineSettings: projectMachineSettings(initialState, projectPath, {
       protectedMappings: [
         { libraryId: firstId, label: "后期包", rootPath: "I:\\【后期包 ver10.0】" },
         { libraryId: secondId, label: "AI视频制作", rootPath: "I:\\AI视频制作" },
       ],
-    },
+    }),
   };
 }
 
@@ -998,7 +1108,7 @@ test("添加不搬动文件夹时会先转换 UXP 扩展路径", async () => {
 
   assert.ok(harness.lstatPaths.includes("E:\\项目\\素材"));
   assert.ok(harness.lstatPaths.includes("E:\\共享库\\后期包"));
-  const settings = JSON.parse(harness.localStorage.values.get("hechao.material-batch-organizer.machine.v1"));
+  const settings = JSON.parse(harness.localStorage.values.get(MACHINE_SETTINGS_V2_KEY));
   assert.equal(settings.protectedMappings[0].rootPath, "E:\\共享库\\后期包");
   assert.equal(harness.latestState.protectedLibraries[0].label, "后期包");
   assert.match(harness.settingsMessage.textContent, /已添加“后期包”/);
@@ -1012,11 +1122,11 @@ test("首次开启时已有的外部普通素材会进入待整理，不会被 b
   const initialState = State.createState("E:\\项目", new Date(2026, 8, 4, 9, 0, 0));
   const harness = createProtectedFolderHarness(null, null, null, {
     initialState,
-    initialMachineSettings: {
-      autoByMediaSpace: { [initialState.mediaSpaceId]: false },
-      protectedSetupByMediaSpace: { [initialState.mediaSpaceId]: true },
-      protectedMappings: [],
-    },
+    initialMachineSettings: projectMachineSettings(
+      initialState,
+      "E:\\项目\\测试工程.prproj",
+      { projectSetup: false },
+    ),
     inventoryEntries: [{ itemId: "clip-download", mediaPath: sourcePath, itemName: "318完整版.mp4" }],
     lstatResultForPath(nativePath) {
       if (Core.samePath(nativePath, sourcePath)) {
@@ -1044,8 +1154,13 @@ test("首次开启时已有的外部普通素材会进入待整理，不会被 b
       "首次归集应完成初始化；诊断：" + harness.diagnostics.join(" | "),
     );
     assert.equal(
-      JSON.parse(harness.localStorage.values.get("hechao.material-batch-organizer.machine.v1"))
-        .autoByMediaSpace[initialState.mediaSpaceId],
+      JSON.parse(harness.localStorage.values.get(MACHINE_SETTINGS_V2_KEY))
+        .autoByProject[State.projectKey("E:\\项目\\测试工程.prproj")],
+      true,
+    );
+    assert.equal(
+      JSON.parse(harness.localStorage.values.get(MACHINE_SETTINGS_V2_KEY))
+        .projectSetupByProject[State.projectKey("E:\\项目\\测试工程.prproj")],
       true,
     );
     assert.match(harness.stateTitle.textContent, /等待 1 个文件写完/);
@@ -1055,6 +1170,282 @@ test("首次开启时已有的外部普通素材会进入待整理，不会被 b
       sourceSize,
       "大于 4 GiB 的视频大小必须保持为完整 Number，不能截断成 32 位整数",
     );
+  } finally {
+    harness.entrypoints.hide();
+  }
+});
+
+test("同目录第二个工程不会继承旧的工作区自动开关，也不会在首次显示时自动补链", async () => {
+  const workspaceRoot = "E:\\项目";
+  const firstContext = projectContext(workspaceRoot, "第一版.prproj");
+  let saveCalls = 0;
+  const secondContext = projectContext(workspaceRoot, "交接版.prproj", {
+    async save() {
+      saveCalls += 1;
+      return true;
+    },
+  });
+  const sourcePath = "C:\\Downloads\\共享镜头.mp4";
+  const targetRelativePath = "素材\\001_初始素材\\共享镜头.mp4";
+  const targetPath = Core.joinNativePath(workspaceRoot, targetRelativePath);
+  const targetFingerprint = { size: 4096, mtimeMs: 2000, ctimeMs: 3000 };
+  let relinkCalls = 0;
+  const clip = {
+    mediaPath: sourcePath,
+    async canChangeMediaPath() { return true; },
+    async changeMediaFilePath(nextPath) {
+      relinkCalls += 1;
+      this.mediaPath = nextPath;
+      return true;
+    },
+    async refreshMedia() {},
+    async getMediaFilePath() { return this.mediaPath; },
+    async isOffline() { return false; },
+  };
+  const now = new Date("2026-09-04T08:00:00.000Z");
+  let initialState = State.createState(workspaceRoot, now);
+  initialState.initialized = true;
+  initialState = State.registerProject(initialState, firstContext.projectPath, firstContext.projectName, now);
+  initialState.pathMappings[Core.normalizePathForComparison(sourcePath)] = [{
+    sourcePath,
+    targetRelativePath,
+    sourceFingerprint: { size: 4096, mtimeMs: 1000, ctimeMs: 1000 },
+    targetFingerprint,
+    batchIndex: 1,
+    byteCount: 4096,
+    movedAt: "2026-09-04T08:01:00.000Z",
+  }];
+
+  const harness = createProtectedFolderHarness(null, null, null, {
+    context: secondContext,
+    initialState,
+    initialMachineSettings: {
+      schemaVersion: 2,
+      autoByProject: { [State.projectKey(firstContext.projectPath)]: true },
+      projectSetupByProject: { [State.projectKey(firstContext.projectPath)]: true },
+      protectedRevisionByProject: {
+        [State.projectKey(firstContext.projectPath)]: initialState.protectedConfigRevision,
+      },
+      protectedMappings: [],
+    },
+    inventoryEntries: [{ itemId: "clip-shared", mediaPath: sourcePath, itemName: "共享镜头.mp4", clip }],
+    lstatResultForPath(nativePath) {
+      if (Core.samePath(nativePath, sourcePath)) {
+        const error = new Error("path not found");
+        error.code = "ENOENT";
+        throw error;
+      }
+      if (Core.samePath(nativePath, targetPath)) return readableFile(
+        targetFingerprint.size,
+        targetFingerprint.mtimeMs,
+      );
+      return { isDirectory: () => true, isFile: () => false };
+    },
+  });
+
+  await harness.entrypoints.show();
+  try {
+    const visibleState = harness.stateTitle.textContent + " " + harness.stateDescription.textContent;
+    assert.equal(harness.autoCollectToggle.checked, false);
+    assert.match(visibleState, /先设置不搬动文件夹/);
+    assert.equal(harness.document.body.dataset.onboarding, "protection");
+    assert.equal(relinkCalls, 0, "第二个工程未显式启用前不能自动补链");
+    assert.equal(saveCalls, 0, "第二个工程未显式启用前不能触发工程保存");
+    assert.deepEqual(harness.fsMutationCalls, []);
+  } finally {
+    harness.entrypoints.hide();
+  }
+});
+
+test("旧 autoByMediaSpace=true 只作为旧数据保留，不能让任意工程自动开启", async () => {
+  const workspaceRoot = "E:\\旧项目";
+  const context = projectContext(workspaceRoot, "旧工程.prproj");
+  const sourcePath = "C:\\Downloads\\旧素材.wav";
+  const protectedRoot = "I:\\共享素材\\旧后期包";
+  const libraryId = "library-legacy-post-kit";
+  const now = new Date("2026-09-04T08:00:00.000Z");
+  let initialState = State.createState(workspaceRoot, now);
+  initialState.initialized = true;
+  initialState = State.registerProject(initialState, context.projectPath, context.projectName, now);
+  initialState = State.addProtectedLibrary(initialState, libraryId, "旧后期包", now);
+  const harness = createProtectedFolderHarness(null, null, null, {
+    context,
+    initialState,
+    initialLegacyMachineSettings: {
+      autoByMediaSpace: { [initialState.mediaSpaceId]: true },
+      protectedSetupByMediaSpace: { [initialState.mediaSpaceId]: true },
+      protectedMappings: [{ libraryId, label: "旧后期包", rootPath: protectedRoot }],
+    },
+    inventoryEntries: [{ itemId: "legacy-clip", mediaPath: sourcePath, itemName: "旧素材.wav" }],
+    lstatResultForPath(nativePath) {
+      if (Core.samePath(nativePath, sourcePath)) return readableFile(2048, Date.now() - 60_000);
+      return { isDirectory: () => true, isFile: () => false };
+    },
+  });
+
+  await harness.entrypoints.show();
+  try {
+    assert.equal(harness.autoCollectToggle.checked, false);
+    assert.equal(harness.document.body.dataset.onboarding, "protection");
+    assert.match(harness.protectedList.textContent, /旧后期包/);
+    assert.match(harness.protectedList.textContent, /I:\\共享素材\\旧后期包/);
+    assert.deepEqual(harness.fsMutationCalls, []);
+  } finally {
+    harness.entrypoints.hide();
+  }
+});
+
+test("v2 中遗留的工作区布尔字段不能替代当前工程的名单版本确认", async () => {
+  const workspaceRoot = "E:\\迁移项目";
+  const context = projectContext(workspaceRoot, "剪辑.prproj");
+  const sourcePath = "C:\\Downloads\\待归集.mov";
+  const now = new Date("2026-09-04T08:00:00.000Z");
+  let initialState = State.createState(workspaceRoot, now);
+  initialState.initialized = true;
+  initialState = State.registerProject(initialState, context.projectPath, context.projectName, now);
+  const projectKey = State.projectKey(context.projectPath);
+  const harness = createProtectedFolderHarness(null, null, null, {
+    context,
+    initialState,
+    initialMachineSettings: {
+      schemaVersion: 2,
+      autoByProject: {},
+      projectSetupByProject: {},
+      protectedRevisionByProject: {},
+      autoByMediaSpace: { [initialState.mediaSpaceId]: true },
+      protectedSetupByMediaSpace: { [initialState.mediaSpaceId]: true },
+      protectedMappings: [],
+    },
+    inventoryEntries: [{ itemId: "clip-stale", mediaPath: sourcePath, itemName: "待归集.mov" }],
+    lstatResultForPath(nativePath) {
+      if (Core.samePath(nativePath, sourcePath)) return readableFile(2048, Date.now() - 60_000);
+      return { isDirectory: () => true, isFile: () => false };
+    },
+  });
+
+  await harness.entrypoints.show();
+  try {
+    assert.equal(harness.document.body.dataset.onboarding, "protection");
+    assert.equal(harness.autoCollectToggle.checked, false);
+    assert.equal(harness.inventoryCount, 0);
+    assert.deepEqual(harness.fsMutationCalls, []);
+    const settings = JSON.parse(harness.localStorage.values.get(MACHINE_SETTINGS_V2_KEY));
+    assert.equal(settings.autoByProject[projectKey], undefined);
+    assert.equal(settings.protectedRevisionByProject[projectKey], undefined);
+  } finally {
+    harness.entrypoints.hide();
+  }
+});
+
+test("每个工程显式开启后才扫描工程外已有和后来新增的素材", async () => {
+  const workspaceRoot = "E:\\逐工程开启";
+  const enabledContext = projectContext(workspaceRoot, "本期.prproj");
+  const otherContext = projectContext(workspaceRoot, "下期.prproj");
+  const existingPath = "C:\\Downloads\\开场.mp4";
+  const addedPath = "C:\\Downloads\\补拍.mp4";
+  const now = new Date("2026-09-04T08:00:00.000Z");
+  let initialState = State.createState(workspaceRoot, now);
+  initialState.initialized = true;
+  initialState = State.registerProject(initialState, enabledContext.projectPath, enabledContext.projectName, now);
+  const initialMachineSettings = projectMachineSettings(
+    initialState,
+    enabledContext.projectPath,
+    { projectSetup: false },
+  );
+  const existing = { itemId: "existing", mediaPath: existingPath, itemName: "开场.mp4" };
+  const added = { itemId: "added", mediaPath: addedPath, itemName: "补拍.mp4" };
+  const harness = createProtectedFolderHarness(null, null, null, {
+    context: enabledContext,
+    initialState,
+    initialMachineSettings,
+    inventoryEntries: [existing],
+    lstatResultForPath(nativePath) {
+      if (Core.samePath(nativePath, existingPath)) return readableFile(2 * 1024 * 1024, Date.now() - 60_000);
+      if (Core.samePath(nativePath, addedPath)) return readableFile(3 * 1024 * 1024, Date.now() - 60_000);
+      return { isDirectory: () => true, isFile: () => false };
+    },
+  });
+
+  await harness.entrypoints.show();
+  try {
+    assert.equal(harness.autoCollectToggle.checked, false);
+    assert.deepEqual(harness.fsMutationCalls, []);
+    const scansBeforeEnable = harness.inventoryCount;
+
+    harness.window.listeners.get("batch-collector:auto-collect")({ detail: { enabled: true } });
+    await settle();
+    assert.equal(harness.autoCollectToggle.checked, true);
+    assert.ok(harness.inventoryCount > scansBeforeEnable, "显式开启时应检查工程外已有素材");
+
+    harness.setInventoryEntries([existing, added]);
+    const scansBeforeNewImport = harness.inventoryCount;
+    harness.window.listeners.get("batch-collector:refresh")();
+    await settle();
+    assert.ok(harness.inventoryCount > scansBeforeNewImport, "开启后应继续检查后来新增的工程外素材");
+    assert.match(
+      harness.stateTitle.textContent + " " + harness.stateDescription.textContent,
+      /2\s*个/,
+    );
+  } finally {
+    harness.entrypoints.hide();
+  }
+
+  const savedSettings = JSON.parse(
+    harness.localStorage.values.get(MACHINE_SETTINGS_V2_KEY),
+  );
+  const otherHarness = createProtectedFolderHarness(null, null, null, {
+    context: otherContext,
+    initialState: harness.latestState || initialState,
+    initialMachineSettings: savedSettings,
+    inventoryEntries: [],
+  });
+  await otherHarness.entrypoints.show();
+  try {
+    assert.equal(otherHarness.autoCollectToggle.checked, false, "另一个工程仍需自己显式开启");
+    assert.deepEqual(otherHarness.fsMutationCalls, []);
+  } finally {
+    otherHarness.entrypoints.hide();
+  }
+});
+
+test("工程首次显示时汇总工程外普通素材的数量和总大小，但不会立即搬动", async () => {
+  const workspaceRoot = "E:\\待启用项目";
+  const context = projectContext(workspaceRoot, "待启用.prproj");
+  const firstPath = "C:\\Downloads\\甲.wav";
+  const secondPath = "D:\\临时素材\\乙.mp4";
+  const now = new Date("2026-09-04T08:00:00.000Z");
+  let initialState = State.createState(workspaceRoot, now);
+  initialState.initialized = true;
+  initialState = State.registerProject(initialState, context.projectPath, context.projectName, now);
+  const harness = createProtectedFolderHarness(null, null, null, {
+    context,
+    initialState,
+    initialMachineSettings: projectMachineSettings(initialState, context.projectPath, {
+      projectSetup: false,
+    }),
+    inventoryEntries: [
+      { itemId: "first", mediaPath: firstPath, itemName: "甲.wav" },
+      { itemId: "second", mediaPath: secondPath, itemName: "乙.mp4" },
+    ],
+    lstatResultForPath(nativePath) {
+      if (Core.samePath(nativePath, firstPath)) return readableFile(2 * 1024 * 1024, Date.now() - 60_000);
+      if (Core.samePath(nativePath, secondPath)) return readableFile(3 * 1024 * 1024, Date.now() - 60_000);
+      return { isDirectory: () => true, isFile: () => false };
+    },
+  });
+
+  await harness.entrypoints.show();
+  try {
+    const visibleSummary = [
+      harness.stateTitle.textContent,
+      harness.stateDescription.textContent,
+      harness.fileCount.textContent,
+      harness.fileSize.textContent,
+    ].join(" ");
+    assert.match(visibleSummary, /2\s*个/);
+    assert.match(visibleSummary, /5(?:\.0+)?\s*MB/i);
+    assert.equal(harness.autoCollectToggle.checked, false);
+    assert.deepEqual(harness.fsMutationCalls, []);
   } finally {
     harness.entrypoints.hide();
   }
@@ -1120,11 +1511,9 @@ test("旧状态确认新归集策略后保留 baseline 证据，但不再用它�
   }], now);
   const harness = createProtectedFolderHarness(null, null, null, {
     initialState,
-    initialMachineSettings: {
-      autoByMediaSpace: { [initialState.mediaSpaceId]: false },
-      protectedSetupByMediaSpace: { [initialState.mediaSpaceId]: true },
-      protectedMappings: [],
-    },
+    initialMachineSettings: projectMachineSettings(initialState, projectPath, {
+      projectSetup: false,
+    }),
     inventoryEntries: [{ itemId: "clip-legacy", mediaPath: sourcePath, itemName: "旧版已记住.mp4" }],
     lstatResultForPath(nativePath) {
       if (Core.samePath(nativePath, sourcePath)) {
@@ -1136,8 +1525,8 @@ test("旧状态确认新归集策略后保留 baseline 证据，但不再用它�
 
   await harness.entrypoints.show();
   try {
-    assert.equal(harness.stateTitle.textContent, "现有素材还没有整理");
-    assert.equal(harness.stateAction.dataset.intent, "开始整理现有素材");
+    assert.equal(harness.stateTitle.textContent, "当前工程尚未开启");
+    assert.equal(harness.stateAction.dataset.intent, "开始整理此工程");
     assert.deepEqual(harness.fsMutationCalls, [], "确认之前不得移动旧 baseline 素材");
 
     await harness.window.listeners.get("batch-collector:state-action")();
@@ -1151,8 +1540,8 @@ test("旧状态确认新归集策略后保留 baseline 证据，但不再用它�
     );
     assert.match(harness.stateTitle.textContent, /等待 1 个文件写完/);
     assert.equal(
-      JSON.parse(harness.localStorage.values.get("hechao.material-batch-organizer.machine.v1"))
-        .autoByMediaSpace[initialState.mediaSpaceId],
+      JSON.parse(harness.localStorage.values.get(MACHINE_SETTINGS_V2_KEY))
+        .autoByProject[State.projectKey(projectPath)],
       true,
     );
   } finally {
@@ -1172,11 +1561,10 @@ test("首次扫描仍保护不搬动、已管理和工程文件，并把危险�
   initialState = State.addProtectedLibrary(initialState, libraryId, "后期包", new Date(2026, 8, 4, 9, 0, 1));
   const harness = createProtectedFolderHarness(null, null, null, {
     initialState,
-    initialMachineSettings: {
-      autoByMediaSpace: { [initialState.mediaSpaceId]: false },
-      protectedSetupByMediaSpace: { [initialState.mediaSpaceId]: true },
+    initialMachineSettings: projectMachineSettings(initialState, "E:\\项目\\测试工程.prproj", {
+      projectSetup: false,
       protectedMappings: [{ libraryId, label: "后期包", rootPath: protectedRoot }],
-    },
+    }),
     inventoryEntries: [protectedPath, managedPath, projectAssetPath, reviewPath].map((mediaPath, index) => ({
       itemId: "clip-" + index,
       mediaPath,
@@ -1215,7 +1603,7 @@ test("首次扫描仍保护不搬动、已管理和工程文件，并把危险�
     assert.equal(harness.reviewSection.hidden, false);
     assert.equal(harness.reviewList.children.length, 1);
     assert.match(harness.reviewList.textContent, /动态模板\.mogrt/);
-    assert.match(harness.stateTitle.textContent, /1 个素材需要确认/);
+    assert.match(harness.stateTitle.textContent, /1 个素材需要人工处理/);
     assert.deepEqual(harness.fsMutationCalls, []);
   } finally {
     harness.entrypoints.hide();
@@ -1225,9 +1613,11 @@ test("首次扫描仍保护不搬动、已管理和工程文件，并把危险�
 test("素材目录已经存在时仍会确认目录并正常打开", async () => {
   const existsError = new Error("file already exists");
   const initialState = State.createState("E:\\项目", new Date("2026-09-04T00:00:00.000Z"));
+  const projectPath = "E:\\项目\\测试工程.prproj";
   const expectedBatchPath = State.currentBatchPath(initialState, "E:\\项目");
   const harness = createProtectedFolderHarness(null, null, null, {
     initialState,
+    initialMachineSettings: projectMachineSettings(initialState, projectPath, { auto: false }),
     mkdirError: existsError,
   });
   await harness.entrypoints.show();
@@ -1247,8 +1637,10 @@ test("素材目录已经存在时仍会确认目录并正常打开", async () =>
 test("打开素材目录遇到权限错误时只显示局部中文提示，不污染主状态", async () => {
   const denied = Object.assign(new Error("permission denied"), { code: "EACCES" });
   const initialState = State.createState("E:\\项目", new Date("2026-09-04T00:00:00.000Z"));
+  const projectPath = "E:\\项目\\测试工程.prproj";
   const harness = createProtectedFolderHarness(null, null, null, {
     initialState,
+    initialMachineSettings: projectMachineSettings(initialState, projectPath, { auto: false }),
     mkdirError: denied,
   });
   await harness.entrypoints.show();
@@ -1267,9 +1659,11 @@ test("打开素材目录遇到权限错误时只显示局部中文提示，不�
 
 test("素材目录位置被同名文件占用时不会打开或覆盖", async () => {
   const initialState = State.createState("E:\\项目", new Date("2026-09-04T00:00:00.000Z"));
+  const projectPath = "E:\\项目\\测试工程.prproj";
   const expectedBatchPath = State.currentBatchPath(initialState, "E:\\项目");
   const harness = createProtectedFolderHarness(null, null, null, {
     initialState,
+    initialMachineSettings: projectMachineSettings(initialState, projectPath, { auto: false }),
     mkdirError: new Error("file already exists"),
     lstatResultForPath(nativePath) {
       if (nativePath === "E:\\项目\\素材") return { isDirectory: () => true, isFile: () => false };
@@ -1299,22 +1693,18 @@ test("仅打开文件夹失败时不会把正在运行的自动整理显示为�
   const openError = Object.assign(new Error("permission denied"), { code: "EACCES" });
   const harness = createProtectedFolderHarness(null, null, null, {
     initialState,
-    initialMachineSettings: {
-      autoByMediaSpace: { [initialState.mediaSpaceId]: true },
-      protectedSetupByMediaSpace: { [initialState.mediaSpaceId]: true },
-      protectedMappings: [],
-    },
+    initialMachineSettings: projectMachineSettings(initialState, "E:\\项目\\测试工程.prproj"),
     shellOpenError: openError,
   });
 
   await harness.entrypoints.show();
   try {
-    assert.equal(harness.stateTitle.textContent, "自动整理已开启");
+    assert.equal(harness.stateTitle.textContent, "此工程的自动整理已开启");
     harness.window.listeners.get("batch-collector:open-batch")();
     await settle();
 
-    const settings = JSON.parse(harness.localStorage.values.get("hechao.material-batch-organizer.machine.v1"));
-    assert.equal(settings.autoByMediaSpace[initialState.mediaSpaceId], true);
+    const settings = JSON.parse(harness.localStorage.values.get(MACHINE_SETTINGS_V2_KEY));
+    assert.equal(settings.autoByProject[State.projectKey("E:\\项目\\测试工程.prproj")], true);
     assert.equal(harness.autoCollectToggle.checked, true);
     assert.notEqual(harness.stateTitle.textContent, "自动整理已暂停");
     assert.notEqual(harness.document.body.dataset.state, "failure");
@@ -1341,13 +1731,12 @@ test("三个不搬动文件夹会逐项显示名称、完整路径和管理按�
   });
   const harness = createProtectedFolderHarness(null, null, null, {
     initialState,
-    initialMachineSettings: {
-      autoByMediaSpace: {},
-      protectedSetupByMediaSpace: {},
+    initialMachineSettings: projectMachineSettings(initialState, "E:\\项目\\测试工程.prproj", {
+      projectSetup: false,
       protectedMappings: libraries.map(function ([libraryId, label, rootPath]) {
         return { libraryId, label, rootPath };
       }),
-    },
+    }),
   });
   await harness.entrypoints.show();
 
@@ -1373,11 +1762,10 @@ test("选择重叠文件夹时会写出已有名单路径和本次选择路径",
   initialState = State.addProtectedLibrary(initialState, libraryId, "【后期包 ver10.0】", new Date("2026-09-04T00:00:01.000Z"));
   const harness = createProtectedFolderHarness(null, null, null, {
     initialState,
-    initialMachineSettings: {
-      autoByMediaSpace: {},
-      protectedSetupByMediaSpace: {},
+    initialMachineSettings: projectMachineSettings(initialState, "E:\\项目\\测试工程.prproj", {
+      projectSetup: false,
       protectedMappings: [{ libraryId, label: "【后期包 ver10.0】", rootPath: existingPath }],
-    },
+    }),
     selectedFolder: { nativePath: "\\\\?\\" + selectedPath, name: "音效" },
   });
   await harness.entrypoints.show();
@@ -1397,6 +1785,69 @@ test("选择重叠文件夹时会写出已有名单路径和本次选择路径",
   assert.equal(harness.lstatPaths.includes(selectedPath), false, "发现名单重叠后不会再访问本次选择路径");
 });
 
+test("选择器打开期间其他面板加入重叠目录时会重读名单并拒绝写入", async () => {
+  const workspaceRoot = "E:\\项目";
+  const projectPath = "E:\\项目\\测试工程.prproj";
+  const parentPath = "I:\\共享库\\后期包";
+  const selectedPath = parentPath + "\\音效";
+  const libraryId = "library-concurrent-post-kit";
+  const pickerStarted = deferred();
+  const pickerResult = deferred();
+  const now = new Date("2026-09-04T00:00:00.000Z");
+  let initialState = State.createState(workspaceRoot, now);
+  initialState = State.registerProject(initialState, projectPath, "测试工程.prproj", now);
+  const stateStore = { value: initialState, revision: "initial" };
+  const sharedLocalStorage = createSharedLocalStorage([[
+    MACHINE_SETTINGS_V2_KEY,
+    JSON.stringify(projectMachineSettings(initialState, projectPath, {
+      projectSetup: false,
+      protection: false,
+    })),
+  ]]);
+  const harness = createProtectedFolderHarness(null, null, null, {
+    stateStore,
+    sharedLocalStorage,
+    async getFolder() {
+      pickerStarted.resolve();
+      return pickerResult.promise;
+    },
+  });
+  await harness.entrypoints.show();
+
+  try {
+    harness.addButton.listeners.get("click")();
+    await pickerStarted.promise;
+
+    let externalState = State.addProtectedLibrary(stateStore.value, libraryId, "后期包", now);
+    externalState = State.bumpProtectedConfigRevision(externalState, now);
+    stateStore.value = externalState;
+    stateStore.revision = "external-1";
+    sharedLocalStorage.values.set(
+      MACHINE_SETTINGS_V2_KEY,
+      JSON.stringify(projectMachineSettings(externalState, projectPath, {
+        projectSetup: false,
+        protection: false,
+        protectedMappings: [{ libraryId, label: "后期包", rootPath: parentPath }],
+      })),
+    );
+    pickerResult.resolve({ nativePath: "\\\\?\\" + selectedPath, name: "音效" });
+    await settle();
+    await settle();
+
+    assert.equal(harness.stateWriteCalls, 0, "并发名单变化后不得覆盖共享状态");
+    assert.equal(stateStore.value.protectedConfigRevision, 2);
+    assert.deepEqual(
+      stateStore.value.protectedLibraries.map((library) => library.libraryId),
+      [libraryId],
+    );
+    assert.equal(harness.settingsMessage.dataset.kind, "error");
+    assert.match(harness.settingsMessage.textContent, /范围重叠/);
+    assert.deepEqual(harness.fsMutationCalls, []);
+  } finally {
+    harness.entrypoints.hide();
+  }
+});
+
 test("取消从名单移除时不会修改任何设置或整理记录", async () => {
   const fixture = protectedRemovalFixture();
   const harness = createProtectedFolderHarness(null, null, null, {
@@ -1407,7 +1858,7 @@ test("取消从名单移除时不会修改任何设置或整理记录", async ()
 
   try {
     const stateBefore = JSON.stringify(harness.latestState);
-    const settingsBefore = harness.localStorage.values.get("hechao.material-batch-organizer.machine.v1");
+    const settingsBefore = harness.localStorage.values.get(MACHINE_SETTINGS_V2_KEY);
     const stateWritesBefore = harness.stateWriteCalls;
     const machineWritesBefore = harness.localStorage.setCalls;
     const inventoryBefore = harness.inventoryCount;
@@ -1423,7 +1874,7 @@ test("取消从名单移除时不会修改任何设置或整理记录", async ()
     assert.match(harness.confirmMessages[0], /不会删除磁盘文件夹或里面的素材/);
     assert.equal(harness.stateWriteCalls, stateWritesBefore);
     assert.equal(harness.localStorage.setCalls, machineWritesBefore);
-    assert.equal(harness.localStorage.values.get("hechao.material-batch-organizer.machine.v1"), settingsBefore);
+    assert.equal(harness.localStorage.values.get(MACHINE_SETTINGS_V2_KEY), settingsBefore);
     assert.equal(JSON.stringify(harness.latestState), stateBefore);
     assert.equal(harness.inventoryCount, inventoryBefore, "取消后不会重新扫描工程");
     assert.deepEqual(harness.fsMutationCalls, []);
@@ -1452,15 +1903,15 @@ test("确认移除只删除所选名单项并持久化，同时暂停自动整�
 
     assert.equal(harness.confirmMessages.length, 1);
     assert.match(harness.confirmMessages[0], /文件夹：I:\\【后期包 ver10\.0】/);
-    assert.match(harness.confirmMessages[0], /自动整理会暂停/);
+    assert.match(harness.confirmMessages[0], /同一工程文件夹内的所有工程都会暂停/);
     assert.equal(harness.stateWriteCalls, stateWritesBefore + 1, "确认后会原子保存更新后的工程名单");
     assert.deepEqual(
       harness.latestState.protectedLibraries.map((library) => library.libraryId),
       [fixture.secondId],
       "只移除用户确认的那一个名单项"
     );
-    const machineSettings = JSON.parse(harness.localStorage.values.get("hechao.material-batch-organizer.machine.v1"));
-    assert.equal(machineSettings.autoByMediaSpace[harness.latestState.mediaSpaceId], false);
+    const machineSettings = JSON.parse(harness.localStorage.values.get(MACHINE_SETTINGS_V2_KEY));
+    assert.equal(machineSettings.autoByProject[State.projectKey("E:\\项目\\测试工程.prproj")], false);
     assert.equal(harness.inventoryCount, inventoryBefore, "名单管理不应启动素材扫描");
     assert.deepEqual(harness.fsMutationCalls, [], "名单管理不应调用任何文件移动或删除 API");
     assert.equal(harness.protectedListCount.textContent, "1 个");
@@ -1469,7 +1920,86 @@ test("确认移除只删除所选名单项并持久化，同时暂停自动整�
     assert.match(harness.protectedList.textContent, /AI视频制作/);
     assert.equal(harness.settingsMessage.dataset.kind, "success");
     assert.match(harness.settingsMessage.textContent, /没有删除磁盘文件或素材/);
-    assert.match(harness.settingsMessage.textContent, /自动整理已暂停/);
+    assert.match(harness.settingsMessage.textContent, /同一工程文件夹内的所有工程已暂停/);
+  } finally {
+    harness.entrypoints.hide();
+  }
+});
+
+test("确认移除期间其他面板已删除同一项时不会重复递增名单版本", async () => {
+  const fixture = protectedRemovalFixture();
+  const stateStore = { value: fixture.initialState, revision: "initial" };
+  const sharedLocalStorage = createSharedLocalStorage([[
+    MACHINE_SETTINGS_V2_KEY,
+    JSON.stringify(fixture.initialMachineSettings),
+  ]]);
+  const originalRevision = fixture.initialState.protectedConfigRevision;
+  const harness = createProtectedFolderHarness(null, null, null, {
+    ...fixture,
+    stateStore,
+    sharedLocalStorage,
+    confirmResult: true,
+    onConfirm() {
+      let externalState = State.removeProtectedLibrary(stateStore.value, fixture.firstId, new Date());
+      externalState = State.bumpProtectedConfigRevision(externalState, new Date());
+      stateStore.value = externalState;
+      stateStore.revision = "external-remove";
+    },
+  });
+  await harness.entrypoints.show();
+
+  try {
+    const removeButton = findProtectedAction(harness.protectedList, fixture.firstId, "remove");
+    harness.protectedList.listeners.get("click")({ target: removeButton });
+    await settle();
+
+    assert.equal(harness.stateWriteCalls, 0, "已经完成的外部删除不得再次写状态");
+    assert.equal(stateStore.value.protectedConfigRevision, originalRevision + 1);
+    assert.deepEqual(
+      stateStore.value.protectedLibraries.map((library) => library.libraryId),
+      [fixture.secondId],
+    );
+    assert.equal(harness.settingsMessage.dataset.kind, "error");
+    assert.match(harness.settingsMessage.textContent, /名单已经变化/);
+    assert.deepEqual(harness.fsMutationCalls, []);
+  } finally {
+    harness.entrypoints.hide();
+  }
+});
+
+test("不搬动名单变化会暂停同一工程文件夹里的全部工程，但不会影响其他工程文件夹", async () => {
+  const fixture = protectedRemovalFixture();
+  const currentProjectPath = "E:\\项目\\测试工程.prproj";
+  const siblingProjectPath = "E:\\项目\\交接版.prproj";
+  const unrelatedProjectPath = "D:\\其他项目\\独立工程.prproj";
+  fixture.initialState = State.registerProject(
+    fixture.initialState,
+    siblingProjectPath,
+    "交接版.prproj",
+    new Date("2026-09-04T08:01:00.000Z"),
+  );
+  fixture.initialMachineSettings.autoByProject[State.projectKey(siblingProjectPath)] = true;
+  fixture.initialMachineSettings.projectSetupByProject[State.projectKey(siblingProjectPath)] = true;
+  fixture.initialMachineSettings.autoByProject[State.projectKey(unrelatedProjectPath)] = true;
+  fixture.initialMachineSettings.projectSetupByProject[State.projectKey(unrelatedProjectPath)] = true;
+
+  const harness = createProtectedFolderHarness(null, null, null, {
+    ...fixture,
+    confirmResult: true,
+  });
+  await harness.entrypoints.show();
+
+  try {
+    const removeButton = findProtectedAction(harness.protectedList, fixture.firstId, "remove");
+    harness.protectedList.listeners.get("click")({ target: removeButton });
+    await settle();
+
+    const settings = JSON.parse(
+      harness.localStorage.values.get(MACHINE_SETTINGS_V2_KEY),
+    );
+    assert.equal(settings.autoByProject[State.projectKey(currentProjectPath)], false);
+    assert.equal(settings.autoByProject[State.projectKey(siblingProjectPath)], false);
+    assert.equal(settings.autoByProject[State.projectKey(unrelatedProjectPath)], true);
   } finally {
     harness.entrypoints.hide();
   }
@@ -1560,13 +2090,127 @@ test("首次确认不搬动名单后才进入开启自动整理步骤", async ()
   await settle();
 
   assert.equal(harness.document.body.dataset.onboarding, "auto");
-  assert.equal(harness.stateAction.textContent, "开启自动整理");
+  assert.equal(harness.stateAction.textContent, "开始整理此工程");
   assert.ok(harness.latestState && harness.latestState.mediaSpaceId, "空名单确认也会先保存素材空间");
-  const settings = JSON.parse(harness.localStorage.values.get("hechao.material-batch-organizer.machine.v1"));
-  assert.equal(Object.values(settings.protectedSetupByMediaSpace).every(Boolean), true);
-  assert.equal(Object.keys(settings.protectedSetupByMediaSpace).length, 1);
-  assert.equal(settings.protectedSetupByMediaSpace[harness.latestState.mediaSpaceId], true);
+  const settings = JSON.parse(harness.localStorage.values.get(MACHINE_SETTINGS_V2_KEY));
+  const projectKey = State.projectKey("E:\\项目\\测试工程.prproj");
+  assert.equal(settings.schemaVersion, 2);
+  assert.equal(settings.protectedRevisionByProject[projectKey], harness.latestState.protectedConfigRevision);
+  assert.equal(Object.keys(settings.protectedRevisionByProject).length, 1);
   assert.equal(harness.localStorage.setCalls, settingsWritesBeforeConfirmation + 1, "确认时两个本机字段只提交一次");
+});
+
+test("其他面板更新不搬动名单版本后，当前面板会在扫描前暂停", async () => {
+  const workspaceRoot = "E:\\跨面板项目";
+  const context = projectContext(workspaceRoot, "剪辑.prproj");
+  const now = new Date("2026-09-04T08:00:00.000Z");
+  let initialState = State.createState(workspaceRoot, now);
+  initialState.initialized = true;
+  initialState = State.registerProject(initialState, context.projectPath, context.projectName, now);
+  const stateStore = { value: initialState, revision: "initial" };
+  const sharedLocalStorage = createSharedLocalStorage([[
+    MACHINE_SETTINGS_V2_KEY,
+    JSON.stringify(projectMachineSettings(initialState, context.projectPath)),
+  ]]);
+  const harness = createProtectedFolderHarness(null, null, null, {
+    context,
+    stateStore,
+    sharedLocalStorage,
+    inventoryEntries: [],
+  });
+  await harness.entrypoints.show();
+
+  try {
+    const scansBefore = harness.inventoryCount;
+    const writesBefore = harness.stateWriteCalls;
+    stateStore.value = State.bumpProtectedConfigRevision(stateStore.value, new Date(now.getTime() + 1000));
+    stateStore.revision = "external-revision-2";
+
+    harness.window.listeners.get("batch-collector:refresh")();
+    await settle();
+    await settle();
+
+    const projectKey = State.projectKey(context.projectPath);
+    const settings = JSON.parse(sharedLocalStorage.values.get(MACHINE_SETTINGS_V2_KEY));
+    assert.equal(harness.stateReadCalls >= 2, true, "扫描前必须重新读取共享工程状态");
+    assert.equal(settings.autoByProject[projectKey], false);
+    assert.equal(harness.autoCollectToggle.checked, false);
+    assert.equal(harness.document.body.dataset.onboarding, "protection");
+    assert.equal(harness.inventoryCount, scansBefore, "名单版本不匹配时不得读取素材清单");
+    assert.equal(harness.stateWriteCalls, writesBefore);
+    assert.deepEqual(harness.fsMutationCalls, []);
+  } finally {
+    harness.entrypoints.hide();
+  }
+});
+
+test("确认名单入队后活动工程已切换时不会确认任何工程", async () => {
+  const workspaceRoot = "E:\\工程切换";
+  const contextA = projectContext(workspaceRoot, "A.prproj");
+  const contextB = projectContext(workspaceRoot, "B.prproj");
+  let liveContext = contextA;
+  const harness = createProtectedFolderHarness(null, null, null, {
+    context: contextA,
+    activeContext() { return liveContext; },
+    contextStillActive(expectedIdentity) { return liveContext.identity === expectedIdentity; },
+  });
+  await harness.entrypoints.show();
+
+  try {
+    const writesBefore = harness.stateWriteCalls;
+    const settingsWritesBefore = harness.localStorage.setCalls;
+    const scansBefore = harness.inventoryCount;
+    liveContext = contextB;
+    harness.finishButton.listeners.get("click")();
+    await settle();
+
+    assert.equal(harness.stateWriteCalls, writesBefore);
+    assert.equal(harness.localStorage.setCalls, settingsWritesBefore);
+    assert.equal(harness.inventoryCount, scansBefore);
+    assert.equal(harness.settingsMessage.dataset.kind, "error");
+    assert.match(harness.diagnostics.join("\n"), /活动工程已切换/);
+    assert.deepEqual(harness.fsMutationCalls, []);
+  } finally {
+    harness.entrypoints.hide();
+  }
+});
+
+test("确认名单刷新取得旧工程快照后再切换工程时仍不会保存", async () => {
+  const workspaceRoot = "E:\\工程切换";
+  const contextA = projectContext(workspaceRoot, "A.prproj");
+  const contextB = projectContext(workspaceRoot, "B.prproj");
+  let liveContext = contextA;
+  let activeContextCalls = 0;
+  const harness = createProtectedFolderHarness(null, null, null, {
+    context: contextA,
+    activeContext() {
+      activeContextCalls += 1;
+      if (activeContextCalls === 2) {
+        liveContext = contextB;
+        return contextA;
+      }
+      return liveContext;
+    },
+    contextStillActive(expectedIdentity) { return liveContext.identity === expectedIdentity; },
+  });
+  await harness.entrypoints.show();
+
+  try {
+    const writesBefore = harness.stateWriteCalls;
+    const settingsWritesBefore = harness.localStorage.setCalls;
+    const scansBefore = harness.inventoryCount;
+    harness.finishButton.listeners.get("click")();
+    await settle();
+
+    assert.equal(harness.stateWriteCalls, writesBefore);
+    assert.equal(harness.localStorage.setCalls, settingsWritesBefore);
+    assert.equal(harness.inventoryCount, scansBefore);
+    assert.equal(harness.settingsMessage.dataset.kind, "error");
+    assert.match(harness.diagnostics.join("\n"), /活动工程已切换/);
+    assert.deepEqual(harness.fsMutationCalls, []);
+  } finally {
+    harness.entrypoints.hide();
+  }
 });
 
 test("文件夹缺失和权限错误只显示中文", async () => {
@@ -1600,14 +2244,21 @@ test("本机设置保存失败时不会误认为不搬动名单已确认", async
   assert.equal(harness.settingsMessage.dataset.kind, "error");
   assert.match(harness.settingsMessage.textContent, /无法保存本机设置/);
   assert.doesNotMatch(harness.settingsMessage.textContent, /quota|exceeded/i);
-  const failedSettings = JSON.parse(harness.localStorage.values.get("hechao.material-batch-organizer.machine.v1"));
-  assert.equal(Object.keys(failedSettings.protectedSetupByMediaSpace).length, 0, "失败写入不会残留已确认标记");
+  assert.equal(
+    harness.localStorage.values.has(MACHINE_SETTINGS_V2_KEY),
+    false,
+    "第一次写入失败时不会残留任何已确认设置",
+  );
   assert.match(harness.diagnostics.join("\n"), /cause\.message=quota exceeded/);
 
   harness.finishButton.listeners.get("click")();
   await settle();
-  const retriedSettings = JSON.parse(harness.localStorage.values.get("hechao.material-batch-organizer.machine.v1"));
-  assert.equal(retriedSettings.protectedSetupByMediaSpace[harness.latestState.mediaSpaceId], true, "重试后可一次提交完整设置");
+  const retriedSettings = JSON.parse(harness.localStorage.values.get(MACHINE_SETTINGS_V2_KEY));
+  assert.equal(
+    retriedSettings.protectedRevisionByProject[State.projectKey("E:\\项目\\测试工程.prproj")],
+    harness.latestState.protectedConfigRevision,
+    "重试后可一次提交当前工程和当前名单版本",
+  );
   assert.equal(harness.document.body.dataset.onboarding, "auto");
 });
 
@@ -1658,7 +2309,21 @@ test("历史重链接失败后会保持等待，直到恢复操作成功保存 P
 
   assert.equal(harness.project.saveCalls, 2, "显式恢复操作会重试保存 Premiere 工程");
   assert.equal(harness.latestState.pendingProjectSave, null, "只有保存成功后才会清除待保存状态");
-  assert.equal(harness.readCount, 2, "恢复流程会重新读取持久化的待处理记录");
+  assert.ok(harness.readCount >= 2, "恢复流程会重新读取持久化的待处理记录");
+});
+
+test("当前工程明确开启后再暂停，历史映射也不会自动补链或保存 Premiere 工程", async () => {
+  const harness = createMappingHarness({ autoEnabled: false });
+  await harness.entrypoints.show();
+
+  try {
+    assert.equal(harness.project.saveCalls, 0);
+    assert.equal(harness.clip.mediaPath, "C:\\Downloads\\mapped.mp4");
+    assert.equal(harness.writeCount, 0);
+    assert.equal(harness.stateAction.dataset.intent, "继续自动整理");
+  } finally {
+    harness.entrypoints.hide();
+  }
 });
 
 test("恢复待处理事务时拒绝接受在 Premiere 保存期间被替换的目标", async () => {

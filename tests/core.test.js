@@ -121,6 +121,34 @@ test("不会把 .prproj 或保护目录根路径归类为待归集素材", () =>
   assert.equal(Core.classifyMediaPath("C:\\Users\\Admin\\Downloads\\a.mp4", options).kind, "collect");
 });
 
+test("工程文件夹内任意普通素材都视为已经受管，素材根目录仍保持受管", () => {
+  const options = {
+    workspaceRoot: "E:\\项目",
+    mediaRoot: "E:\\项目\\素材",
+    protectedRoots: [],
+  };
+
+  assert.equal(Core.classifyMediaPath("E:\\项目\\片头.mp4", options).kind, "managed");
+  assert.equal(Core.classifyMediaPath("E:\\项目\\拍摄\\第一机位\\片头.mp4", options).kind, "managed");
+  assert.equal(Core.classifyMediaPath("E:\\项目\\素材\\旧批次\\片头.mp4", options).kind, "managed");
+  assert.equal(Core.classifyMediaPath("E:\\项目-副本\\片头.mp4", options).kind, "collect");
+  assert.equal(Core.classifyMediaPath("C:\\下载\\片头.mp4", options).kind, "collect");
+});
+
+test("工程文件夹内所有素材都保持原位，包括工程型素材和图片序列", () => {
+  const options = {
+    workspaceRoot: "E:\\项目",
+    mediaRoot: "E:\\项目\\素材",
+    protectedRoots: [],
+  };
+
+  assert.equal(Core.classifyMediaPath("E:\\项目\\合成\\片头.aep", options).kind, "managed");
+  assert.equal(Core.classifyMediaPath("E:\\项目\\合成\\片头.aepx", options).kind, "managed");
+  assert.equal(Core.classifyMediaPath("E:\\项目\\模板\\字幕.mogrt", options).kind, "managed");
+  assert.equal(Core.classifyMediaPath("E:\\项目\\序列\\shot_0001.exr", options).kind, "managed");
+  assert.equal(Core.classifyMediaPath("E:\\项目\\拍摄\\第一机位.mp4", options).kind, "managed");
+});
+
 test("将动态链接和疑似图像序列留待审核", () => {
   assert.equal(Core.classifyMediaPath("D:\\motion\\title.aep", {}).kind, "review");
   assert.equal(Core.classifyMediaPath("D:\\frames\\shot_0001.exr", {}).kind, "review");

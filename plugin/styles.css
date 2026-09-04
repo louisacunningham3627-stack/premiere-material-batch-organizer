@@ -159,7 +159,7 @@ body[data-state="savefailed"] .action-section > .button-primary:hover:not(:disab
 
 .settings-page { display: block; width: 100%; max-width: 440px; min-width: 280px; height: 100vh; min-height: 0; margin: 0 auto; overflow: hidden; background: var(--surface-panel); }
 .settings-scroll { width: 100%; height: 100%; min-height: 0; overflow-y: auto; padding: 12px 16px 22px; scrollbar-color: var(--ink-700) transparent; scrollbar-width: thin; }
-.settings-toolbar { justify-content: space-between; margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid var(--border-subtle); }
+.settings-toolbar { position: sticky; top: 0; z-index: 2; justify-content: space-between; margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid var(--border-subtle); background: var(--surface-panel); }
 .settings-back { width: auto; min-height: 36px; flex: 0 0 auto; padding: 7px 10px; }
 .settings-save-status { color: var(--text-tertiary); font-size: 10px; line-height: 1.25; text-align: right; white-space: nowrap; }
 .settings-save-status[data-saved="true"] { color: var(--state-success); }
