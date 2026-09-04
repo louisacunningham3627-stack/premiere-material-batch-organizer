@@ -82,7 +82,8 @@
 
     <button class="protection-summary" id="protectedCount" type="button" aria-controls="settingsPage" aria-expanded="false">
       <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 20 6v5c0 5-3.4 8.4-8 10-4.6-1.6-8-5-8-10V6l8-3Z"/><path d="m8 12 2.5 2.5L16 9"/></svg>
-      <span id="protectedCountText">3 个共享素材文件夹不会移动</span>
+      <strong>管理不搬动文件夹</strong>
+      <span id="protectedCountText">3 个</span>
       <svg class="icon arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18 15 12 9 6"/></svg>
     </button>
 
@@ -100,16 +101,16 @@
   </main>
 
   <section class="settings-page" id="settingsPage" aria-labelledby="settingsHeading" aria-hidden="true" hidden>
-    <header class="settings-header">
-      <button class="settings-back" id="closeSettingsButton" type="button" aria-label="返回自动整理主页" title="返回自动整理主页">
-        <span class="settings-back-arrow" aria-hidden="true">←</span><span>返回主页</span>
-      </button>
-      <h2 id="settingsHeading">不搬动文件夹</h2>
-      <span class="settings-save-status" id="settingsSaveStatus">自动保存</span>
-    </header>
+    <div class="settings-scroll" id="settingsScroll">
+      <div class="settings-toolbar">
+        <button class="button button-secondary settings-back" id="closeSettingsButton" type="button" aria-label="返回整理界面" title="返回整理界面">
+          <span class="settings-back-arrow" aria-hidden="true">←</span><span>返回整理界面</span>
+        </button>
+        <span class="settings-save-status" id="settingsSaveStatus">自动保存</span>
+      </div>
 
-    <div class="settings-scroll">
-      <p class="settings-intro"><strong>先选择必须留在原位的文件夹</strong><span>例如后期包或共享音效库。没有的话直接继续。</span></p>
+      <h2 class="settings-page-title" id="settingsHeading">管理不搬动文件夹</h2>
+      <p class="settings-intro"><strong>这些文件夹里的素材保持原位</strong><span>可以添加、换位置或从名单移除；移除不会删除磁盘文件。</span></p>
 
       <div class="settings-message" id="settingsMessage" role="status" aria-live="polite" aria-atomic="true" hidden></div>
 
@@ -122,11 +123,6 @@
         <strong>当前不搬动文件夹</strong>
         <span id="protectedListCount">2 个</span>
       </div>
-      <code class="protected-path-overview" id="protectedPathOverview">【后期包 ver10.0】
-I:\【后期包 ver10.0】
-
-共享音效库
-这台电脑还没有选择位置</code>
 
       <ul class="protected-list" id="protectedList" aria-live="polite">
         <li class="protected-item" data-connection-state="connected">
@@ -134,7 +130,7 @@ I:\【后期包 ver10.0】
           <code class="protected-path">I:\【后期包 ver10.0】</code>
           <div class="protected-actions">
             <button class="button button-secondary" type="button" data-library-id="preview-post-kit" data-action="map">更换位置</button>
-            <button class="button button-quiet" type="button" data-library-id="preview-post-kit" data-action="remove">移除</button>
+            <button class="button button-quiet" type="button" data-library-id="preview-post-kit" data-action="remove">从名单移除</button>
           </div>
         </li>
         <li class="protected-item" data-connection-state="unresolved">
@@ -142,7 +138,7 @@ I:\【后期包 ver10.0】
           <p class="protected-reason">这台电脑还没有对应位置</p>
           <div class="protected-actions">
             <button class="button button-secondary" type="button" data-library-id="preview-sfx" data-action="map">选择本机位置</button>
-            <button class="button button-quiet" type="button" data-library-id="preview-sfx" data-action="remove">移除</button>
+            <button class="button button-quiet" type="button" data-library-id="preview-sfx" data-action="remove">从名单移除</button>
           </div>
         </li>
       </ul>
@@ -231,25 +227,17 @@ I:\【后期包 ver10.0】
       const qs = (id) => document.getElementById(id);
       const settingsPreviewMarkup = {
         empty: '<li class="protected-empty"><strong>还没有添加文件夹</strong><span>后期包、共享音效库等长期素材可以加在这里。</span></li>',
-        connected: '<li class="protected-item" data-connection-state="connected"><div class="protected-item-heading"><strong>后期包</strong><span class="protected-status">已连接</span></div><code class="protected-path">I:\\【后期包 ver10.0】</code><div class="protected-actions"><button class="button button-secondary" type="button" data-library-id="preview-post-kit" data-action="map">更换位置</button><button class="button button-quiet" type="button" data-library-id="preview-post-kit" data-action="remove">移除</button></div></li>',
-        unresolved: '<li class="protected-item" data-connection-state="unresolved"><div class="protected-item-heading"><strong>共享音效库</strong><span class="protected-status">需要重新选择</span></div><p class="protected-reason">这台电脑还没有对应位置</p><p class="protected-detail">交接到这台电脑后，需要重新指定文件夹</p><div class="protected-actions"><button class="button button-secondary" type="button" data-library-id="preview-sfx" data-action="map">选择本机位置</button><button class="button button-quiet" type="button" data-library-id="preview-sfx" data-action="remove">移除</button></div></li>',
+        connected: '<li class="protected-item" data-connection-state="connected"><div class="protected-item-heading"><strong>后期包</strong><span class="protected-status">已连接</span></div><code class="protected-path">I:\\【后期包 ver10.0】</code><div class="protected-actions"><button class="button button-secondary" type="button" data-library-id="preview-post-kit" data-action="map">更换位置</button><button class="button button-quiet" type="button" data-library-id="preview-post-kit" data-action="remove">从名单移除</button></div></li>',
+        unresolved: '<li class="protected-item" data-connection-state="unresolved"><div class="protected-item-heading"><strong>共享音效库</strong><span class="protected-status">需要重新选择</span></div><p class="protected-reason">这台电脑还没有对应位置</p><p class="protected-detail">交接到这台电脑后，需要重新指定文件夹</p><div class="protected-actions"><button class="button button-secondary" type="button" data-library-id="preview-sfx" data-action="map">选择本机位置</button><button class="button button-quiet" type="button" data-library-id="preview-sfx" data-action="remove">从名单移除</button></div></li>',
       };
-      const settingsPreviewSummary = {
-        empty: { count: '0 个', overview: '' },
-        connected: { count: '1 个', overview: '后期包\nI:\\【后期包 ver10.0】' },
-        unresolved: { count: '1 个', overview: '共享音效库\n这台电脑还没有选择位置' },
-        mixed: { count: '2 个', overview: '【后期包 ver10.0】\nI:\\【后期包 ver10.0】\n\n共享音效库\n这台电脑还没有选择位置' },
-      };
+      const settingsPreviewCount = { empty: '0 个', connected: '1 个', unresolved: '1 个', mixed: '2 个' };
       const mixedSettingsMarkup = qs('protectedList').innerHTML;
       const setSettingsPreview = (name) => {
         const list = qs('protectedList');
         const message = qs('settingsMessage');
         const finish = qs('finishProtectionButton');
-        const summary = settingsPreviewSummary[name] || settingsPreviewSummary.mixed;
         list.innerHTML = settingsPreviewMarkup[name] || mixedSettingsMarkup;
-        qs('protectedListCount').textContent = summary.count;
-        qs('protectedPathOverview').textContent = summary.overview;
-        qs('protectedPathOverview').hidden = !summary.overview;
+        qs('protectedListCount').textContent = settingsPreviewCount[name] || settingsPreviewCount.mixed;
         message.hidden = name !== 'error';
         message.dataset.kind = 'error';
         message.textContent = name === 'error'
@@ -378,6 +366,7 @@ I:\【后期包 ver10.0】
         page.hidden = false;
         page.setAttribute('aria-hidden', 'false');
         qs('protectedCount').setAttribute('aria-expanded', 'true');
+        qs('settingsScroll').scrollTop = 0;
         qs('closeSettingsButton').focus();
       };
       const closeSettingsPage = () => {

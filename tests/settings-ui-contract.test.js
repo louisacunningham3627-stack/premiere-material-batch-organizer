@@ -10,15 +10,29 @@ const styles = fs.readFileSync(path.join(__dirname, "..", "plugin", "styles.css"
 
 test("设置是独立的不搬动文件夹管理页，不再伪装成保存表单", () => {
   assert.match(html, /<section class="settings-page" id="settingsPage"/);
-  assert.match(html, /id="closeSettingsButton"[\s\S]*?>[\s\S]*?返回主页/);
+  const settingsScrollAt = html.indexOf('id="settingsScroll"');
+  const backButtonAt = html.indexOf('id="closeSettingsButton"');
+  const settingsPageEndAt = html.indexOf("</section>", settingsScrollAt);
+  assert.ok(settingsScrollAt >= 0, "设置页必须提供唯一的滚动内容区");
+  assert.ok(backButtonAt > settingsScrollAt && backButtonAt < settingsPageEndAt, "返回按钮必须放在可滚动内容流顶部");
+  assert.match(html.slice(backButtonAt, backButtonAt + 260), /返回整理界面/);
+  assert.doesNotMatch(html, /<header class="settings-header">[\s\S]*?id="closeSettingsButton"[\s\S]*?<\/header>/);
   assert.match(html, /id="settingsSaveStatus">自动保存/);
   assert.match(html, /id="addProtectedButton"[\s\S]*?添加不搬动文件夹/);
   assert.match(html, /id="protectedList"/);
   assert.match(html, /id="protectedListCount"/);
-  assert.match(html, /id="protectedPathOverview"/);
   assert.match(html, /id="settingsMessage" role="status" aria-live="polite"/);
-  assert.doesNotMatch(html, /id="settingsDrawer"|id="drawerBackdrop"|id="protectedPathInput"|id="saveSettingsButton"/);
+  assert.doesNotMatch(html, /id="settingsDrawer"|id="drawerBackdrop"|id="protectedPathInput"|id="protectedPathOverview"|id="saveSettingsButton"/);
   assert.doesNotMatch(html, /<h3>整理方式<\/h3>|class="policy-row"/);
+});
+
+test("主页提供明确的管理入口，并把名单数量作为单独信息显示", () => {
+  const control = html.match(/<button class="protection-summary" id="protectedCount"[\s\S]*?<\/button>/);
+  assert.ok(control, "主页必须保留可进入管理页的按钮");
+  assert.match(control[0], /<strong>管理不搬动文件夹<\/strong>/);
+  assert.match(control[0], /<span id="protectedCountText">\d+ 个<\/span>/);
+  assert.match(source, /setText\("protectedCountText", libraries\.length \+ " 个"\)/);
+  assert.doesNotMatch(source, /protectedCountText[\s\S]{0,120}共享素材文件夹不会移动/);
 });
 
 test("设置页明确当前共享范围、连接状态和每项操作", () => {
@@ -27,20 +41,27 @@ test("设置页明确当前共享范围、连接状态和每项操作", () => {
   assert.match(source, /还没有添加文件夹/);
   assert.match(source, /statusLabel\.textContent = status\.valid \? "已连接" : "需要重新选择"/);
   assert.match(source, /mapAction\.textContent = status\.valid \? "更换位置" : "选择本机位置"/);
-  assert.match(source, /removeAction\.textContent = "移除"/);
+  assert.match(source, /removeAction\.textContent = "从名单移除"/);
   assert.match(source, /path\.textContent = mapping\.rootPath/);
   assert.match(source, /setText\("protectedListCount", libraries\.length \+ " 个"\)/);
-  assert.match(source, /overview\.textContent = libraries\.map/);
   assert.doesNotMatch(html, /data-(?:path|root-path|source-path|target-path)=/);
 });
 
 test("设置操作会在当前页反馈，缺少工程或忙碌时不会静默失败", () => {
   assert.match(source, /function setSettingsMessage\(kind, message\)/);
-  assert.match(source, /请先打开并保存 Premiere 工程，再添加不搬动文件夹/);
+  assert.match(source, /请先打开并保存 Premiere 工程，才能设置这份名单/);
   assert.match(source, /素材正在整理，完成后才能修改名单/);
+  assert.match(source, /projectState\.pendingTransaction \|\| projectState\.pendingProjectSave/);
+  assert.match(source, /请先完成“检查上次整理”，再修改不搬动文件夹/);
   assert.match(source, /setSettingsMessage\("success", existingLibraryId/);
   assert.match(source, /setSettingsMessage\("error", panelError\)/);
-  assert.doesNotMatch(source, /if \(!projectState \|\| busy\) return;/);
+  assert.match(source, /var initialBlockReason = protectedSettingsBlockReason\(\)/);
+});
+
+test("移除前后都明确磁盘文件不会删除，而且自动整理会暂停", () => {
+  assert.match(source, /从不搬动名单移除“[\s\S]{0,360}不会删除磁盘文件夹或里面的素材[\s\S]{0,120}自动整理会暂停/);
+  assert.match(source, /setMachineSetting\("auto", false\)/);
+  assert.match(source, /已从名单移除“[\s\S]{0,260}没有删除磁盘文件或素材；自动整理已暂停/);
 });
 
 test("名单确认会原子保存本机设置，并按失败阶段显示固定中文提示", () => {
@@ -65,17 +86,18 @@ test("预览提供设置页入口，返回只切换页面而不触发交接", ()
   assert.match(previewHtml, /data-view="settings">不搬动文件夹/);
   assert.match(html, /qs\('panelRoot'\)\.hidden = true/);
   assert.match(html, /qs\('panelRoot'\)\.hidden = false/);
+  assert.match(html, /qs\('settingsScroll'\)\.scrollTop = 0/);
   assert.match(html, /params\.get\('view'\) === 'settings'/);
   assert.doesNotMatch(html, /closeSettingsPage[\s\S]{0,180}batch-collector:handoff/);
 });
 
-test("预览切换名单状态时会同步数量和完整路径摘要", () => {
-  assert.match(html, /empty: \{ count: '0 个', overview: '' \}/);
-  assert.match(html, /connected: \{ count: '1 个', overview: '后期包\\nI:\\\\【后期包 ver10\.0】' \}/);
-  assert.match(html, /unresolved: \{ count: '1 个', overview: '共享音效库\\n这台电脑还没有选择位置' \}/);
-  assert.match(html, /qs\('protectedListCount'\)\.textContent = summary\.count/);
-  assert.match(html, /qs\('protectedPathOverview'\)\.textContent = summary\.overview/);
-  assert.match(html, /qs\('protectedPathOverview'\)\.hidden = !summary\.overview/);
+test("预览切换名单状态时会同步数量，并始终在列表项内显示完整路径", () => {
+  assert.match(html, /const settingsPreviewCount = \{ empty: '0 个', connected: '1 个', unresolved: '1 个', mixed: '2 个' \}/);
+  assert.match(html, /qs\('protectedListCount'\)\.textContent = settingsPreviewCount\[name\] \|\| settingsPreviewCount\.mixed/);
+  const listMarkup = html.match(/<ul class="protected-list" id="protectedList"[\s\S]*?<\/ul>/);
+  assert.ok(listMarkup, "设置页必须直接显示当前名单");
+  assert.match(listMarkup[0], /class="protected-path">I:[^<]*【后期包 ver10\.0】/);
+  assert.match(html, /这台电脑还没有对应位置/);
 });
 
 test("首次使用先确认不搬动文件夹，再允许开启自动整理", () => {
@@ -93,9 +115,10 @@ test("首次使用先确认不搬动文件夹，再允许开启自动整理", ()
 
 test("小面板具有自己的纵向滚动区，关键设置动作排在路径详情之前", () => {
   assert.match(styles, /\.panel\s*\{[^}]*height:\s*100vh;[^}]*overflow-y:\s*auto;/s);
-  assert.match(styles, /\.settings-scroll\s*\{[^}]*overflow-y:\s*auto;/s);
+  assert.match(styles, /\.settings-scroll\s*\{[^}]*height:\s*100%;[^}]*overflow-y:\s*auto;/s);
+  assert.ok(html.indexOf('id="closeSettingsButton"') < html.indexOf('id="settingsHeading"'));
   assert.ok(html.indexOf('id="addProtectedButton"') < html.indexOf('id="settingsWorkspacePath"'));
-  assert.match(styles, /\.settings-header\s*\{[^}]*flex:\s*0 0 46px;/s);
+  assert.match(styles, /\.settings-back\s*\{[^}]*min-height:\s*36px;/s);
   assert.match(styles, /\.settings-message\s*\{[^}]*white-space:\s*pre-wrap;/s);
 });
 

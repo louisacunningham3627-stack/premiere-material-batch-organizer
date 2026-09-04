@@ -154,6 +154,7 @@
     if (busy) return "素材正在整理，完成后才能修改名单。";
     if (!context || !context.projectPath || !projectState) return "请先打开并保存 Premiere 工程，才能设置这份名单。";
     if (stateReloadRequired || storageWarning) return "整理记录需要先恢复，暂时不能修改名单。";
+    if (projectState.pendingTransaction || projectState.pendingProjectSave) return "请先完成“检查上次整理”，再修改不搬动文件夹。";
     return "";
   }
 
@@ -475,15 +476,7 @@
   function renderProtectedLibraries() {
     var libraries = projectState ? projectState.protectedLibraries : [];
     setText("protectedListCount", libraries.length + " 个");
-    var overview = element("protectedPathOverview");
-    if (overview) {
-      overview.hidden = !libraries.length;
-      overview.textContent = libraries.map(function (library) {
-        var status = protectedMappingValidation.statusById[library.libraryId] || { mapping: null };
-        var mapping = status.mapping;
-        return library.label + "\n" + (mapping && mapping.rootPath ? mapping.rootPath : "这台电脑还没有选择位置");
-      }).join("\n\n");
-    }
+    setText("protectedCountText", libraries.length + " 个");
 
     var list = element("protectedList");
     if (!list) return;
@@ -550,7 +543,7 @@
       removeAction.type = "button";
       removeAction.setAttribute("data-library-id", library.libraryId);
       removeAction.setAttribute("data-action", "remove");
-      removeAction.textContent = "移除";
+      removeAction.textContent = "从名单移除";
       removeAction.disabled = Boolean(protectedSettingsBlockReason());
       actions.appendChild(mapAction);
       actions.appendChild(removeAction);
@@ -558,9 +551,6 @@
       list.appendChild(row);
     });
 
-    setText("protectedCountText", libraries.length
-      ? libraries.length + " 个共享素材文件夹不会移动"
-      : "没有设置“不搬动文件夹”");
   }
 
   function render() {
@@ -1869,13 +1859,9 @@
   }
 
   async function chooseProtectedFolder(existingLibraryId) {
-    if (!projectState) {
-      setSettingsMessage("error", "请先打开并保存 Premiere 工程，再添加不搬动文件夹。");
-      render();
-      return;
-    }
-    if (busy) {
-      setSettingsMessage("info", "素材正在整理，完成后才能修改名单。");
+    var initialBlockReason = protectedSettingsBlockReason();
+    if (initialBlockReason) {
+      setSettingsMessage(busy ? "info" : "error", initialBlockReason);
       render();
       return;
     }
@@ -1896,6 +1882,8 @@
         if (!context || context.identity !== expectedIdentity || !projectState) {
           throw new Error("选择文件夹期间活动工程已切换，请重新选择");
         }
+        var blockReason = protectedSettingsBlockReason();
+        if (blockReason) throw new Error(blockReason);
         var previousSettings = JSON.parse(JSON.stringify(machineSettings));
         var previousState = projectState;
         try {
@@ -1943,19 +1931,17 @@
   }
 
   async function removeProtectedLibrary(libraryId) {
-    if (!projectState) {
-      setSettingsMessage("error", "请先打开并保存 Premiere 工程，再修改不搬动文件夹。");
-      render();
-      return;
-    }
-    if (busy) {
-      setSettingsMessage("info", "素材正在整理，完成后才能修改名单。");
+    var initialBlockReason = protectedSettingsBlockReason();
+    if (initialBlockReason) {
+      setSettingsMessage(busy ? "info" : "error", initialBlockReason);
       render();
       return;
     }
     var library = projectState.protectedLibraries.find(function (candidate) { return candidate.libraryId === libraryId; });
     if (!library) return;
-    var approved = typeof window.confirm !== "function" || window.confirm("允许移动“" + library.label + "”里的新素材？\n\n移除后，这个文件夹里的新导入素材可能会被整理走。");
+    var mapping = machineSettings.protectedMappings.find(function (candidate) { return candidate.libraryId === libraryId; });
+    var pathLine = mapping && mapping.rootPath ? "\n文件夹：" + Core.toFileSystemPath(mapping.rootPath) : "";
+    var approved = typeof window.confirm !== "function" || window.confirm("从不搬动名单移除“" + library.label + "”？" + pathLine + "\n\n不会删除磁盘文件夹或里面的素材。为防止素材马上被搬走，自动整理会暂停。");
     if (!approved) return;
     setSettingsMessage("", "");
     var expectedIdentity = context && context.identity;
@@ -1964,12 +1950,14 @@
       if (!context || context.identity !== expectedIdentity || !projectState) {
         throw new Error("移除文件夹期间活动工程已切换，请重新操作");
       }
+      var blockReason = protectedSettingsBlockReason();
+      if (blockReason) throw new Error(blockReason);
       stopMonitor(false);
       setMachineSetting("auto", false);
       var previousState = projectState;
       try {
         projectState = State.removeProtectedLibrary(projectState, libraryId, new Date());
-        projectState = State.addActivity(projectState, "warn", "已允许移动这里的素材：" + library.label, new Date());
+        projectState = State.addActivity(projectState, "warn", "已从不搬动名单移除：" + library.label, new Date());
         await persistState();
       } catch (error) {
         projectState = previousState;
@@ -1977,7 +1965,7 @@
       }
       await refreshProtectedMappingStatus();
       panelError = "";
-      setSettingsMessage("success", "已移除“" + library.label + "”。这个文件夹里的新素材现在可以被整理。");
+      setSettingsMessage("success", "已从名单移除“" + library.label + "”。没有删除磁盘文件或素材；自动整理已暂停，确认后再重新开启。");
     }).catch(function (error) {
       panelError = "移除失败：" + (error.message || error);
       setSettingsMessage("error", panelError);
