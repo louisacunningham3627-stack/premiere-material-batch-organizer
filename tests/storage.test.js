@@ -50,6 +50,24 @@ async function readLock(statePath) {
   return JSON.parse(await fs.readFile(statePath + ".lock", "utf8"));
 }
 
+function translateExclusiveCreateError(makeReplacement) {
+  return new Proxy(fs, {
+    get(target, property) {
+      if (property !== "open") return target[property];
+      return async (nativePath, flags, ...rest) => {
+        try {
+          return await target.open(nativePath, flags, ...rest);
+        } catch (error) {
+          if (flags === "wx" && error && error.code === "EEXIST") {
+            throw makeReplacement(nativePath, error);
+          }
+          throw error;
+        }
+      };
+    },
+  });
+}
+
 test("仅当状态文件和备份都不存在时才报告缺失", async () => {
   await withFolder(async (statePath) => {
     const loaded = await Storage.readJsonWithBackup(fs, statePath);
@@ -198,6 +216,70 @@ test("原子写入将先前有效状态保留为 .bak，并留下已释放的规
     await Storage.writeJsonAtomic(fs, statePath, { version: 3 });
     assert.deepEqual(JSON.parse(await fs.readFile(statePath + ".bak", "utf8")), { version: 2 });
   });
+});
+
+test("UXP 无 code 的 File exists 异常不阻断首次写入后的立即再次写入", async () => {
+  await withFolder(async (statePath) => {
+    let translatedCollisions = 0;
+    const uxpFs = translateExclusiveCreateError(() => {
+      translatedCollisions += 1;
+      return new Error("File exists");
+    });
+    const options = { lockRecheckWait: async () => {} };
+
+    await Storage.writeJsonAtomic(uxpFs, statePath, { version: 1 }, options);
+    await Storage.writeJsonAtomic(uxpFs, statePath, { version: 2 }, options);
+
+    assert.equal(translatedCollisions, 1);
+    assert.deepEqual(JSON.parse(await fs.readFile(statePath, "utf8")), { version: 2 });
+    assert.deepEqual(JSON.parse(await fs.readFile(statePath + ".bak", "utf8")), { version: 1 });
+    assert.equal((await readLock(statePath)).status, "released");
+    assert.equal((await readLock(statePath)).phase, "committed");
+    const leftovers = (await fs.readdir(path.dirname(statePath))).filter((name) => name.includes(".lock.released-"));
+    assert.deepEqual(leftovers, []);
+  });
+});
+
+test("UXP 可通过 name、errno、message 或 String(error) 表达文件已存在", async (t) => {
+  const variants = [
+    ["name", () => Object.assign(new Error("open failed"), { name: "FileExistsError" })],
+    ["文本 errno", () => Object.assign(new Error("open failed"), { errno: "EEXIST" })],
+    ["数值 errno", () => Object.assign(new Error("open failed"), { errno: -4075 })],
+    ["message", () => new Error("File already exists")],
+    ["String(error)", () => ({ toString() { return "Error: Already exists"; } })],
+  ];
+
+  for (const [label, makeError] of variants) {
+    await t.test(label, async () => {
+      await withFolder(async (statePath) => {
+        await Storage.writeJsonAtomic(fs, statePath, { version: 1 });
+        const uxpFs = translateExclusiveCreateError(makeError);
+        await Storage.writeJsonAtomic(uxpFs, statePath, { version: 2 }, { lockRecheckWait: async () => {} });
+        assert.deepEqual(JSON.parse(await fs.readFile(statePath, "utf8")), { version: 2 });
+      });
+    });
+  }
+});
+
+test("明确的权限或 IO 错误不会因为消息提到 File exists 而被当作锁冲突", async (t) => {
+  const variants = [
+    ["权限错误优先", () => Object.assign(new Error("File exists"), { code: "EACCES", errno: -4075 })],
+    ["无 code 的 IO 错误", () => new Error("I/O error while opening lock: File already exists")],
+    ["无 code 的 IO failure", () => new Error("I/O failure while checking whether file exists")],
+  ];
+
+  for (const [label, makeError] of variants) {
+    await t.test(label, async () => {
+      await withFolder(async (statePath) => {
+        await Storage.writeJsonAtomic(fs, statePath, { version: 1 });
+        const originalLock = await fs.readFile(statePath + ".lock", "utf8");
+        const failingFs = translateExclusiveCreateError(makeError);
+        await assert.rejects(Storage.writeJsonAtomic(failingFs, statePath, { version: 2 }));
+        assert.deepEqual(JSON.parse(await fs.readFile(statePath, "utf8")), { version: 1 });
+        assert.equal(await fs.readFile(statePath + ".lock", "utf8"), originalLock);
+      });
+    });
+  }
 });
 
 test("乐观修订号会拒绝过期写入者，而不会覆盖较新的状态", async () => {

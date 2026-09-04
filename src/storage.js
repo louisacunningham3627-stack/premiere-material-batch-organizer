@@ -30,13 +30,58 @@
     return typeof value === "string" ? value : String(value);
   }
 
-  function errorCode(error) {
-    return String(error && error.code || "").toUpperCase();
+  function readErrorField(error, field) {
+    try {
+      return error && error[field] != null ? String(error[field]) : "";
+    } catch (readError) {
+      return "";
+    }
   }
 
   function isAlreadyExistsError(error) {
-    var code = errorCode(error);
-    return code === "EEXIST" || code === "FILE_EXISTS" || code === "ALREADY_EXISTS";
+    var structured = ["code", "name", "errno"].map(function (field) {
+      return readErrorField(error, field).trim().toUpperCase();
+    });
+    var normalized = structured.map(function (value) { return value.replace(/[\s_-]+/g, ""); });
+    var knownOtherCodes = [
+      "ENOENT", "EACCES", "EPERM", "EBUSY", "EIO", "EROFS", "ENOTDIR", "EISDIR", "EINVAL", "ENOSPC",
+      "ETXTBSY", "ENOTEMPTY", "ELOOP", "ENAMETOOLONG", "EMFILE", "ENFILE", "EDQUOT", "EXDEV",
+      "FILENOTFOUND", "PATHNOTFOUND", "NOTFOUNDERROR", "ACCESSDENIED", "PERMISSIONDENIED",
+      "SHARINGVIOLATION", "LOCKVIOLATION",
+    ];
+    if (normalized.some(function (value) { return knownOtherCodes.indexOf(value) >= 0; })) return false;
+
+    var knownExists = ["EEXIST", "FILEEXISTS", "FILEALREADYEXISTS", "ALREADYEXISTS", "FILEEXISTSERROR", "ALREADYEXISTSERROR"];
+    if (normalized.some(function (value) { return knownExists.indexOf(value) >= 0; })) return true;
+
+    var numericFields = [readErrorField(error, "code"), readErrorField(error, "errno")];
+    if (typeof error === "number" || (typeof error === "string" && /^-?\d+$/.test(error.trim()))) {
+      numericFields.push(String(error));
+    }
+    var knownOtherNumbers = [2, 3, 5, 13, -13, 16, -16, 28, -28, 30, -30, 32, 33, -4058, -4092];
+    if (numericFields.some(function (value) {
+      var number = Number(value);
+      return Number.isFinite(number) && knownOtherNumbers.indexOf(number) >= 0;
+    })) return false;
+    var knownExistsNumbers = [17, -17, -4075, 80, 183];
+    if (numericFields.some(function (value) {
+      var number = Number(value);
+      return Number.isFinite(number) && knownExistsNumbers.indexOf(number) >= 0;
+    })) return true;
+
+    var parts = structured.concat([readErrorField(error, "message")]);
+    try { parts.push(error == null ? "" : String(error)); } catch (stringError) {}
+    var description = parts.join("\n").toUpperCase();
+    var knownOtherMessage = /ACCESS[_ -]*DENIED|PERMISSION[_ -]*DENIED|SHARING[_ -]*VIOLATION|LOCK[_ -]*VIOLATION|(?:I\/O|IO|INPUT[ /-]*OUTPUT)[ _-]*(?:ERROR|FAIL(?:ED|URE)?)|NO SPACE LEFT|READ-ONLY FILE SYSTEM/;
+    if (knownOtherMessage.test(description)) return false;
+
+    return description.split(/\r?\n/).some(function (line) {
+      var value = line.trim();
+      return /^(?:(?:ERROR|FILESYSTEM ?ERROR)\s*:\s*)?EEXIST(?:\s*:.*)?$/.test(value)
+        || /^(?:(?:ERROR|FILESYSTEM ?ERROR)\s*:\s*)?(?:(?:A|THE)\s+)?(?:FILE|FOLDER|DIRECTORY|ENTRY)\s+(?:ALREADY\s+)?EXISTS(?:\s*[.!])?(?:\s*[,;:]\s*.*|\s+(?:AT|FOR)\s+.*)?$/.test(value)
+        || /^(?:(?:ERROR|FILESYSTEM ?ERROR)\s*:\s*)?ALREADY\s+EXISTS(?:\s*[.!])?(?:\s*[,;:]\s*.*)?$/.test(value)
+        || /^(?:错误\s*[:：]\s*)?(?:文件|文件夹|目录|路径)已(?:经)?存在(?:[。.!！]|$|\s*[,，:：]\s*.*)/.test(value);
+    });
   }
 
   function hashText(text) {

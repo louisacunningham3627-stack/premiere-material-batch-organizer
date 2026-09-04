@@ -61,6 +61,70 @@
     settingsMessage = String(message || "");
   }
 
+  function readErrorDetail(error, field) {
+    try {
+      return error && error[field] != null ? String(error[field]) : "";
+    } catch (readError) {
+      return "";
+    }
+  }
+
+  function runtimeErrorDiagnostic(error) {
+    var details = [];
+    function append(source, prefix) {
+      if (!source) return;
+      ["name", "code", "errno", "message"].forEach(function (field) {
+        var value = readErrorDetail(source, field).trim();
+        if (value) details.push(prefix + field + "=" + value);
+      });
+      try {
+        var rendered = String(source).trim();
+        if (rendered && details.indexOf(prefix + "string=" + rendered) < 0) details.push(prefix + "string=" + rendered);
+      } catch (stringError) {}
+    }
+    append(error, "error.");
+    append(error && error.cause, "cause.");
+    return details.join("；") || "没有可用的错误详情";
+  }
+
+  function reportRuntimeError(action, error) {
+    try {
+      if (typeof console !== "undefined" && console && typeof console.error === "function") {
+        console.error("[赫朝素材自动整理] " + action + "：" + runtimeErrorDiagnostic(error));
+      }
+    } catch (logError) {}
+  }
+
+  function machineSettingsSaveError(error) {
+    var wrapped = new Error("无法保存本机设置，名单尚未确认，请关闭面板后重试。");
+    wrapped.name = "MaterialBatchMachineSettingsError";
+    wrapped.code = "MATERIAL_BATCH_MACHINE_SETTINGS_SAVE_FAILED";
+    wrapped.cause = error;
+    wrapped.originalName = readErrorDetail(error, "name");
+    wrapped.originalCode = readErrorDetail(error, "code");
+    wrapped.originalErrno = readErrorDetail(error, "errno");
+    wrapped.originalMessage = readErrorDetail(error, "message");
+    return wrapped;
+  }
+
+  function protectionSetupErrorMessage(error, stage) {
+    var message = readErrorDetail(error, "message").trim();
+    var code = readErrorDetail(error, "code").trim().toUpperCase();
+    if (/^MATERIAL_BATCH_[A-Z0-9_]+$/.test(code) && /[\u3400-\u9fff]/.test(message)) return message;
+    var validationMessages = [
+      "素材正在整理，完成后才能修改名单。",
+      "请先打开并保存 Premiere 工程，才能设置这份名单。",
+      "整理记录需要先恢复，暂时不能修改名单。",
+      "请先重新选择所有需要连接的不搬动文件夹。",
+    ];
+    if (stage === "validation" && validationMessages.indexOf(message) >= 0) return message;
+    if (stage === "project-state") {
+      return "无法保存当前工程文件夹里的整理记录，请检查磁盘连接和访问权限后重试。";
+    }
+    if (stage === "machine-settings") return "无法保存本机设置，名单尚未确认，请关闭面板后重试。";
+    return "无法检查当前工程和不搬动文件夹，请稍后重试。";
+  }
+
   function protectedFolderErrorMessage(error) {
     var message = "";
     try { message = String(error && error.message || error || "").trim(); } catch (stringError) {}
@@ -167,7 +231,11 @@
   }
 
   function saveMachineSettings() {
-    localStorage.setItem(MACHINE_SETTINGS_KEY, JSON.stringify(machineSettings));
+    try {
+      localStorage.setItem(MACHINE_SETTINGS_KEY, JSON.stringify(machineSettings));
+    } catch (error) {
+      throw machineSettingsSaveError(error);
+    }
   }
 
   function currentAutoSetting() {
@@ -178,25 +246,40 @@
     return Boolean(projectState && machineSettings.protectedSetupByMediaSpace[projectState.mediaSpaceId] === true);
   }
 
-  function setMachineSetting(name, value) {
+  function setMachineSettings(values) {
     if (!projectState) return;
-    var target = name === "auto"
-      ? machineSettings.autoByMediaSpace
-      : name === "protection"
-        ? machineSettings.protectedSetupByMediaSpace
-        : null;
-    if (!target) return;
     var key = projectState.mediaSpaceId;
-    var hadPrevious = Object.prototype.hasOwnProperty.call(target, key);
-    var previous = target[key];
-    target[key] = value === true;
+    var changes = [];
+    Object.keys(values || {}).forEach(function (name) {
+      var target = name === "auto"
+        ? machineSettings.autoByMediaSpace
+        : name === "protection"
+          ? machineSettings.protectedSetupByMediaSpace
+          : null;
+      if (!target) return;
+      changes.push({
+        target: target,
+        hadPrevious: Object.prototype.hasOwnProperty.call(target, key),
+        previous: target[key],
+      });
+      target[key] = values[name] === true;
+    });
+    if (!changes.length) return;
     try {
       saveMachineSettings();
     } catch (error) {
-      if (hadPrevious) target[key] = previous;
-      else delete target[key];
+      changes.forEach(function (change) {
+        if (change.hadPrevious) change.target[key] = change.previous;
+        else delete change.target[key];
+      });
       throw error;
     }
+  }
+
+  function setMachineSetting(name, value) {
+    var values = {};
+    values[name] = value;
+    setMachineSettings(values);
   }
 
   function workspaceProtectedMappings() {
@@ -1873,6 +1956,7 @@
   }
 
   async function completeProtectionSetup() {
+    var failureStage = "validation";
     await operationQueue.run(async function () {
       await refreshContext();
       var blockReason = protectedSettingsBlockReason();
@@ -1882,9 +1966,10 @@
         throw new Error("请先重新选择所有需要连接的不搬动文件夹。");
       }
       // 空名单首次确认时也要先固定素材空间编号，关闭面板后才能继续复用本机确认。
+      failureStage = "project-state";
       await persistState();
-      setMachineSetting("protection", true);
-      setMachineSetting("auto", false);
+      failureStage = "machine-settings";
+      setMachineSettings({ protection: true, auto: false });
       panelError = "";
       setSettingsMessage("success", "不搬动名单已确认，现在可以开启自动整理。");
     }).then(function () {
@@ -1893,9 +1978,8 @@
         window.dispatchEvent(new CustomEvent("batch-collector:close-settings"));
       }
     }).catch(function (error) {
-      setSettingsMessage("error", /[\u3400-\u9fff]/.test(String(error && error.message || ""))
-        ? error.message
-        : "无法保存本机设置，请关闭面板后重试。");
+      reportRuntimeError("确认不搬动名单失败（" + failureStage + "）", error);
+      setSettingsMessage("error", protectionSetupErrorMessage(error, failureStage));
       render();
     });
   }

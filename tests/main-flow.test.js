@@ -118,7 +118,7 @@ function createSettingsGuardHarness() {
   };
 }
 
-function createProtectedFolderHarness(folderError, localSettingsError) {
+function createProtectedFolderHarness(folderError, localSettingsError, stateWriteError) {
   function testElement() {
     const listeners = new Map();
     return {
@@ -160,6 +160,8 @@ function createProtectedFolderHarness(folderError, localSettingsError) {
   const selectedFolder = { nativePath: "\\\\?\\E:\\共享库\\后期包", name: "后期包" };
   const lstatPaths = [];
   let latestState = null;
+  let stateWriteCalls = 0;
+  const diagnostics = [];
   const fsMock = {
     async lstat(nativePath) {
       lstatPaths.push(nativePath);
@@ -177,8 +179,10 @@ function createProtectedFolderHarness(folderError, localSettingsError) {
     statePath(root) { return `${root}\\.premiere-material-space.json`; },
     async readJsonWithBackup() { return { missing: true, recovered: false, revision: null }; },
     async writeJsonAtomic(_fs, _path, value) {
+      stateWriteCalls += 1;
+      if (stateWriteError && stateWriteCalls === 2) throw stateWriteError;
       latestState = JSON.parse(JSON.stringify(value));
-      return { revision: "saved" };
+      return { revision: `saved-${stateWriteCalls}` };
     },
   };
   const localStorage = {
@@ -204,7 +208,11 @@ function createProtectedFolderHarness(folderError, localSettingsError) {
     shell: { async openPath() {} },
   };
   const sandbox = {
-    console,
+    console: {
+      error(...values) { diagnostics.push(values.map(String).join(" ")); },
+      log() {},
+      warn() {},
+    },
     document,
     window,
     localStorage,
@@ -241,11 +249,13 @@ function createProtectedFolderHarness(folderError, localSettingsError) {
     document,
     entrypoints,
     finishButton,
+    diagnostics,
     lstatPaths,
     localStorage,
     settingsMessage,
     stateAction,
     get latestState() { return latestState; },
+    get stateWriteCalls() { return stateWriteCalls; },
   };
 }
 
@@ -761,6 +771,7 @@ test("添加不搬动文件夹时会先转换 UXP 扩展路径", async () => {
 test("首次确认不搬动名单后才进入开启自动整理步骤", async () => {
   const harness = createProtectedFolderHarness();
   await harness.entrypoints.show();
+  const settingsWritesBeforeConfirmation = harness.localStorage.setCalls;
 
   assert.equal(harness.document.body.dataset.onboarding, "protection");
   assert.equal(harness.stateAction.textContent, "设置不搬动文件夹");
@@ -774,6 +785,7 @@ test("首次确认不搬动名单后才进入开启自动整理步骤", async ()
   assert.equal(Object.values(settings.protectedSetupByMediaSpace).every(Boolean), true);
   assert.equal(Object.keys(settings.protectedSetupByMediaSpace).length, 1);
   assert.equal(settings.protectedSetupByMediaSpace[harness.latestState.mediaSpaceId], true);
+  assert.equal(harness.localStorage.setCalls, settingsWritesBeforeConfirmation + 1, "确认时两个本机字段只提交一次");
 });
 
 test("文件夹缺失和权限错误只显示中文", async () => {
@@ -807,6 +819,38 @@ test("本机设置保存失败时不会误认为不搬动名单已确认", async
   assert.equal(harness.settingsMessage.dataset.kind, "error");
   assert.match(harness.settingsMessage.textContent, /无法保存本机设置/);
   assert.doesNotMatch(harness.settingsMessage.textContent, /quota|exceeded/i);
+  const failedSettings = JSON.parse(harness.localStorage.values.get("hechao.material-batch-organizer.machine.v1"));
+  assert.equal(Object.keys(failedSettings.protectedSetupByMediaSpace).length, 0, "失败写入不会残留已确认标记");
+  assert.match(harness.diagnostics.join("\n"), /cause\.message=quota exceeded/);
+
+  harness.finishButton.listeners.get("click")();
+  await settle();
+  const retriedSettings = JSON.parse(harness.localStorage.values.get("hechao.material-batch-organizer.machine.v1"));
+  assert.equal(retriedSettings.protectedSetupByMediaSpace[harness.latestState.mediaSpaceId], true, "重试后可一次提交完整设置");
+  assert.equal(harness.document.body.dataset.onboarding, "auto");
+});
+
+test("工程整理记录写入失败不会再误报成本机设置失败", async () => {
+  const stateWriteError = new Error("保存整理记录失败: File exists");
+  const harness = createProtectedFolderHarness(null, null, stateWriteError);
+  await harness.entrypoints.show();
+
+  harness.addButton.listeners.get("click")();
+  await settle();
+  assert.equal(harness.stateWriteCalls, 1, "添加文件夹已完成第一次状态写入");
+  const machineWritesBeforeConfirmation = harness.localStorage.setCalls;
+
+  harness.finishButton.listeners.get("click")();
+  await settle();
+
+  assert.equal(harness.stateWriteCalls, 2, "确认名单触发第二次状态写入");
+  assert.equal(harness.localStorage.setCalls, machineWritesBeforeConfirmation, "状态写失败后不会误写本机确认标记");
+  assert.equal(harness.document.body.dataset.onboarding, "protection");
+  assert.equal(harness.settingsMessage.dataset.kind, "error");
+  assert.match(harness.settingsMessage.textContent, /无法保存当前工程文件夹里的整理记录/);
+  assert.doesNotMatch(harness.settingsMessage.textContent, /本机设置|File exists/i);
+  assert.match(harness.diagnostics.join("\n"), /确认不搬动名单失败（project-state）/);
+  assert.match(harness.diagnostics.join("\n"), /error\.message=保存整理记录失败: File exists/);
 });
 
 test("历史重链接失败后会保持等待，直到恢复操作成功保存 Premiere 工程", async () => {

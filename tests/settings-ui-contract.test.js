@@ -39,6 +39,16 @@ test("设置操作会在当前页反馈，缺少工程或忙碌时不会静默�
   assert.doesNotMatch(source, /if \(!projectState \|\| busy\) return;/);
 });
 
+test("名单确认会原子保存本机设置，并按失败阶段显示固定中文提示", () => {
+  assert.match(source, /setMachineSettings\(\{ protection: true, auto: false \}\)/);
+  assert.match(source, /failureStage = "project-state"/);
+  assert.match(source, /failureStage = "machine-settings"/);
+  assert.match(source, /无法保存当前工程文件夹里的整理记录/);
+  assert.match(source, /MATERIAL_BATCH_MACHINE_SETTINGS_SAVE_FAILED/);
+  assert.match(source, /reportRuntimeError\("确认不搬动名单失败/);
+  assert.doesNotMatch(source, /无法保存本机设置，请关闭面板后重试/);
+});
+
 test("添加范围拒绝工程上级目录、素材目录和父子重叠目录", () => {
   assert.match(source, /Core\.isPathInside\(context\.workspaceRoot, rootPath\)/);
   assert.match(source, /Core\.isPathInside\(rootPath, mediaRoot\(\)\).*Core\.isPathInside\(mediaRoot\(\), rootPath\)/);
