@@ -264,6 +264,14 @@ test("UXP 可通过 name、errno、message 或 String(error) 表达文件已存�
 test("明确的权限或 IO 错误不会因为消息提到 File exists 而被当作锁冲突", async (t) => {
   const variants = [
     ["权限错误优先", () => Object.assign(new Error("File exists"), { code: "EACCES", errno: -4075 })],
+    ["嵌套权限错误优先", () => Object.assign(new Error("File exists"), {
+      cause: Object.assign(new Error("permission denied"), { code: "EACCES" }),
+    })],
+    ["深层嵌套权限错误优先", () => Object.assign(new Error("File exists"), {
+      cause: Object.assign(new Error("File already exists"), {
+        cause: Object.assign(new Error("permission denied"), { code: "EACCES" }),
+      }),
+    })],
     ["无 code 的 IO 错误", () => new Error("I/O error while opening lock: File already exists")],
     ["无 code 的 IO failure", () => new Error("I/O failure while checking whether file exists")],
   ];
@@ -670,6 +678,7 @@ test("锁清理失败不会把已提交写入误报为失败", async () => {
     const result = await Storage.writeJsonAtomic(closeFailingFs, statePath, { version: 1 });
     assert.deepEqual(JSON.parse(await fs.readFile(statePath, "utf8")), { version: 1 });
     assert.match(result.lockReleaseWarning, /关闭状态写锁失败/);
+    assert.doesNotMatch(result.lockReleaseWarning, /simulated|failure/i);
     await realLockHandle.close();
     await fs.unlink(statePath + ".lock").catch(() => {});
   });
@@ -703,6 +712,7 @@ test("提升后的 lstat 失败会返回已提交写入及可用警告", async (
     assert.equal(result.committed, true);
     assert.equal(typeof result.revision, "string");
     assert.match(result.warning, /提交后的复核失败/);
+    assert.doesNotMatch(result.warning, /simulated|lstat|failure/i);
     assert.deepEqual(JSON.parse(await fs.readFile(statePath, "utf8")), { version: 9 });
   });
 });
@@ -735,6 +745,7 @@ test("提升后的回读失败会返回已提交写入及可用警告", async ()
     assert.equal(result.committed, true);
     assert.equal(typeof result.revision, "string");
     assert.match(result.warning, /提交后的复核失败/);
+    assert.doesNotMatch(result.warning, /simulated|readback|failure/i);
     assert.deepEqual(JSON.parse(await fs.readFile(statePath, "utf8")), { version: 10 });
   });
 });

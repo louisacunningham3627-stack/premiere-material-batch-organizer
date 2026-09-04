@@ -38,6 +38,13 @@ test("冲突状态会直接指向可操作的审核区域", () => {
   assert.match(html, /if \(intent === 'review'\) showReviews\(\)/);
 });
 
+test("重新检查是始终可读的文字按钮", () => {
+  const refreshButton = html.match(/<button[^>]*id="refreshButton"[^>]*>[\s\S]*?<\/button>/);
+  assert.ok(refreshButton, "主页必须提供重新检查按钮");
+  assert.match(refreshButton[0], />\s*重新检查\s*<\/button>/);
+  assert.match(html, /qs\('refreshButton'\)\.addEventListener\('click'/);
+});
+
 test("预览会展示被动等待写入状态", () => {
   assert.match(previewHtml, /data-state="waiting">等待写完/);
   assert.match(html, /waiting: \{ title: '正在等待文件写完'/);

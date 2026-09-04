@@ -20,6 +20,16 @@
     return value === undefined || value === null || value === 0;
   }
 
+  function userSafeFailureDetail(error, fallback) {
+    var message = "";
+    try { message = String(error && error.message || "").trim(); } catch (readError) {}
+    var startsAsUserMessage = /^[“《（(]*[\u3400-\u9fff]/.test(message) || /^Premiere\s+[\u3400-\u9fff]/.test(message);
+    var containsHostError = /\b(?:ERROR|FAIL(?:ED|URE)?|PERMISSION|DENIED|ACCESS|EEXIST|ENOENT|EACCES|EPERM|EIO|ENOSPC|EDQUOT|QUOTA|EXISTS?|NOT\s+FOUND|NO\s+SUCH|READ-?ONLY|SHARING\s+VIOLATION|LOCK\s+VIOLATION|DISK\s+FULL|DEVICE\s+NOT\s+READY)\b/i.test(message);
+    return (startsAsUserMessage && !containsHostError)
+      ? message
+      : fallback;
+  }
+
   async function exists(fs, nativePath) {
     try {
       await fs.lstat(nativePath);
@@ -335,7 +345,7 @@
               }
             } catch (cleanupError) {}
           }
-          warnings.push("素材移回原路径失败: " + (error.message || error));
+          warnings.push("素材移回原路径失败；相关文件已保留，请人工检查新旧位置");
         }
       }
     }
@@ -359,7 +369,7 @@
         try {
           if ((await options.persistProject()) === false) warnings.push("回滚后的工程保存失败");
         } catch (error) {
-          warnings.push("回滚后的工程保存失败: " + (error.message || error));
+          warnings.push("回滚后的工程保存失败；请人工确认 Premiere 当前素材链接");
         }
       }
     }
@@ -373,7 +383,7 @@
           await unlinkIfPresent(options.fs, options.targetPath);
         }
       } catch (error) {
-        warnings.push("目标副本清理失败: " + (error.message || error));
+        warnings.push("目标副本清理失败；新位置文件已保留，请人工检查");
       }
     }
     if (context.stagingCreated && !preserveCreatedPayload) {
@@ -387,7 +397,7 @@
           }
         }
       } catch (error) {
-        warnings.push("临时复制文件清理失败: " + (error.message || error));
+        warnings.push("临时复制文件清理失败；临时文件已保留，请人工检查");
       }
     }
     return warnings;
@@ -551,15 +561,17 @@
                 cleanupWarning = "原路径已出现另一份文件，未删除这份新文件";
               } else {
                 cleanupPending = true;
-                cleanupWarning = "待删除的原素材仍在: " + sourcePath + "；" + (error.message || error);
+                cleanupWarning = "待删除的原素材仍在：" + sourcePath + "；"
+                  + userSafeFailureDetail(error, "请人工检查后重新处理");
               }
             } else {
               cleanupPending = true;
-              cleanupWarning = "待删除的原素材仍在: " + cleanupPath + "；" + (error.message || error);
+              cleanupWarning = "待删除的原素材仍在：" + cleanupPath + "；"
+                + userSafeFailureDetail(error, "请人工检查后重新处理");
             }
           } catch (inspectionError) {
             cleanupPending = true;
-            cleanupWarning = "无法确认原素材是否已经删除: " + (inspectionError.message || inspectionError);
+            cleanupWarning = "无法确认原素材是否已经删除；相关文件已保留，请人工检查";
           }
         }
       }
@@ -586,10 +598,11 @@
       try {
         rollbackWarnings = await rollback(options, context);
       } catch (rollbackError) {
-        rollbackWarnings.push("自动回滚检查失败: " + (rollbackError.message || rollbackError));
+        rollbackWarnings.push("自动回滚检查失败；相关文件已保留，请人工检查新旧位置和 Premiere 素材链接");
       }
       var wrapped = new Error(error && error.message ? error.message : String(error));
       wrapped.code = error && error.code ? error.code : "MATERIAL_BATCH_TRANSACTION_FAILED";
+      wrapped.cause = error;
       wrapped.rollbackWarnings = rollbackWarnings;
       throw wrapped;
     }
@@ -612,6 +625,7 @@
       if (changedItems.length) {
         var wrapped = new Error(error && error.message ? error.message : String(error));
         wrapped.code = error && error.code ? error.code : "MATERIAL_BATCH_RELINK_FAILED";
+        wrapped.cause = error;
         wrapped.rollbackWarnings = ["补链未确认保存，已保持 Premiere 指向整理后的位置，未自动恢复旧路径"];
         throw wrapped;
       }

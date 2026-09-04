@@ -29,18 +29,19 @@ test("设置是独立的不搬动文件夹管理页，不再伪装成保存表�
 test("主页提供明确的管理入口，并把名单数量作为单独信息显示", () => {
   const control = html.match(/<button class="protection-summary" id="protectedCount"[\s\S]*?<\/button>/);
   assert.ok(control, "主页必须保留可进入管理页的按钮");
-  assert.match(control[0], /<strong>管理不搬动文件夹<\/strong>/);
+  assert.match(control[0], /<strong>不搬动文件夹<\/strong>/);
   assert.match(control[0], /<span id="protectedCountText">\d+ 个<\/span>/);
+  assert.match(control[0], /<span class="protection-action">管理<\/span>/);
   assert.match(source, /setText\("protectedCountText", libraries\.length \+ " 个"\)/);
   assert.doesNotMatch(source, /protectedCountText[\s\S]{0,120}共享素材文件夹不会移动/);
 });
 
 test("设置页明确当前共享范围、连接状态和每项操作", () => {
   assert.match(html, /当前工程文件夹/);
-  assert.match(html, /同一文件夹里的 Premiere 工程共用这份名单/);
+  assert.match(html, /同一文件夹里的所有 Premiere 工程共用这份名单/);
   assert.match(source, /还没有添加文件夹/);
-  assert.match(source, /statusLabel\.textContent = status\.valid \? "已连接" : "需要重新选择"/);
-  assert.match(source, /mapAction\.textContent = status\.valid \? "更换位置" : "选择本机位置"/);
+  assert.match(source, /statusLabel\.textContent = status\.valid \? "可正常使用" : "需要重新选择"/);
+  assert.match(source, /mapAction\.textContent = status\.valid \? "更换文件夹" : "选择本机文件夹"/);
   assert.match(source, /removeAction\.textContent = "从名单移除"/);
   assert.match(source, /path\.textContent = mapping\.rootPath/);
   assert.match(source, /setText\("protectedListCount", libraries\.length \+ " 个"\)/);
@@ -92,12 +93,30 @@ test("预览提供设置页入口，返回只切换页面而不触发交接", ()
 });
 
 test("预览切换名单状态时会同步数量，并始终在列表项内显示完整路径", () => {
-  assert.match(html, /const settingsPreviewCount = \{ empty: '0 个', connected: '1 个', unresolved: '1 个', mixed: '2 个' \}/);
+  assert.match(html, /const settingsPreviewCount = \{ empty: '0 个', connected: '1 个', unresolved: '1 个', mixed: '3 个' \}/);
   assert.match(html, /qs\('protectedListCount'\)\.textContent = settingsPreviewCount\[name\] \|\| settingsPreviewCount\.mixed/);
-  const listMarkup = html.match(/<ul class="protected-list" id="protectedList"[\s\S]*?<\/ul>/);
-  assert.ok(listMarkup, "设置页必须直接显示当前名单");
-  assert.match(listMarkup[0], /class="protected-path">I:[^<]*【后期包 ver10\.0】/);
-  assert.match(html, /这台电脑还没有对应位置/);
+  const listStart = html.indexOf('<div class="protected-list" id="protectedList"');
+  const listEnd = html.indexOf('id="finishProtectionButton"', listStart);
+  assert.ok(listStart >= 0 && listEnd > listStart, "设置页必须直接显示当前名单");
+  const listMarkup = html.slice(listStart, listEnd);
+  assert.match(listMarkup, /class="protected-path">I:[^<]*【后期包 ver10\.0】/);
+  assert.match(listMarkup, /这台电脑还没有选择这个文件夹/);
+});
+
+test("Premiere UXP 主界面只使用稳定的普通区块布局", () => {
+  assert.doesNotMatch(html, /<(?:ul|li|details|summary)\b/i);
+  assert.doesNotMatch(source, /createElement\("(?:ul|li|details|summary)"\)/);
+  assert.doesNotMatch(styles, /display:\s*grid/);
+});
+
+test("主页用文字说明当前工程、整理开关、交接文件夹和重新检查动作", () => {
+  assert.match(html, /class="context-label">当前工程<\/span>/);
+  assert.doesNotMatch(html, /class="status-dot"/);
+  assert.match(html, /class="toggle-label">自动整理<\/span>/);
+  assert.doesNotMatch(styles, /\.toggle-label\s*\{[^}]*display:\s*none/s);
+  assert.match(html, /id="batchHeading">当前交接文件夹<\/h2>/);
+  assert.match(html, /<div class="destination-path"[^>]*>[\s\S]*?<span>磁盘位置<\/span>/);
+  assert.match(html, /id="refreshButton"[^>]*>重新检查<\/button>/);
 });
 
 test("首次使用先确认不搬动文件夹，再允许开启自动整理", () => {

@@ -9,6 +9,7 @@ const Transaction = require("../src/transaction");
 const Recovery = require("../src/recovery");
 const Coordination = require("../src/coordination");
 const ScanPolicy = require("../src/scan-policy");
+const Storage = require("../src/storage");
 
 const mainSource = fs.readFileSync(require.resolve("../src/main.js"), "utf8");
 
@@ -214,9 +215,12 @@ function createProtectedFolderHarness(folderError, localSettingsError, stateWrit
   const settingsBlockReason = testElement();
   const settingsSaveStatus = testElement();
   const stateAction = testElement();
+  const stateTitle = testElement();
+  const stateDescription = testElement();
+  const openBatchButton = testElement();
   const protectedListCount = testElement();
   const protectedCountText = testElement();
-  const protectedList = createDomElement("ul");
+  const protectedList = createDomElement("div");
   const elements = new Map([
     ["addProtectedButton", addButton],
     ["finishProtectionButton", finishButton],
@@ -226,6 +230,9 @@ function createProtectedFolderHarness(folderError, localSettingsError, stateWrit
     ["settingsWorkspaceName", testElement()],
     ["settingsWorkspacePath", testElement()],
     ["stateAction", stateAction],
+    ["stateTitle", stateTitle],
+    ["stateDescription", stateDescription],
+    ["openBatchButton", openBatchButton],
     ["protectedListCount", protectedListCount],
     ["protectedCountText", protectedCountText],
     ["protectedList", protectedList],
@@ -242,6 +249,8 @@ function createProtectedFolderHarness(folderError, localSettingsError, stateWrit
   };
   const selectedFolder = harnessOptions.selectedFolder || { nativePath: "\\\\?\\E:\\共享库\\后期包", name: "后期包" };
   const lstatPaths = [];
+  const mkdirPaths = [];
+  const shellOpenCalls = [];
   const fsMutationCalls = [];
   const confirmMessages = [];
   let latestState = harnessOptions.initialState ? JSON.parse(JSON.stringify(harnessOptions.initialState)) : null;
@@ -257,7 +266,14 @@ function createProtectedFolderHarness(folderError, localSettingsError, stateWrit
         throw error;
       }
       if (folderError) throw folderError;
-      return { isDirectory: () => true, isFile: () => false };
+      if (typeof harnessOptions.lstatResultForPath === "function") {
+        return harnessOptions.lstatResultForPath(nativePath);
+      }
+      return harnessOptions.lstatResult || { isDirectory: () => true, isFile: () => false };
+    },
+    async mkdir(nativePath) {
+      mkdirPaths.push(nativePath);
+      if (harnessOptions.mkdirError) throw harnessOptions.mkdirError;
     },
     async unlink(nativePath) { fsMutationCalls.push(["unlink", nativePath]); },
     async rm(nativePath) { fsMutationCalls.push(["rm", nativePath]); },
@@ -266,6 +282,7 @@ function createProtectedFolderHarness(folderError, localSettingsError, stateWrit
   };
   const storage = {
     MISSING_REVISION: null,
+    isAlreadyExistsError: Storage.isAlreadyExistsError,
     statePath(root) { return `${root}\\.premiere-material-space.json`; },
     async readJsonWithBackup() {
       return harnessOptions.initialState
@@ -274,7 +291,7 @@ function createProtectedFolderHarness(folderError, localSettingsError, stateWrit
     },
     async writeJsonAtomic(_fs, _path, value) {
       stateWriteCalls += 1;
-      if (stateWriteError && stateWriteCalls === 2) throw stateWriteError;
+      if (stateWriteError && stateWriteCalls === (harnessOptions.stateWriteErrorAt || 2)) throw stateWriteError;
       latestState = JSON.parse(JSON.stringify(value));
       return { revision: `saved-${stateWriteCalls}` };
     },
@@ -309,7 +326,12 @@ function createProtectedFolderHarness(folderError, localSettingsError, stateWrit
       setup(config) { Object.assign(entrypoints, config.panels.materialBatchOrganizer); },
     },
     storage: { localFileSystem: { async getFolder() { return selectedFolder; } } },
-    shell: { async openPath() {} },
+    shell: {
+      async openPath(nativePath, label) {
+        shellOpenCalls.push([nativePath, label]);
+        return "";
+      },
+    },
   };
   const sandbox = {
     console: {
@@ -360,13 +382,19 @@ function createProtectedFolderHarness(folderError, localSettingsError, stateWrit
     diagnostics,
     fsMutationCalls,
     lstatPaths,
+    mkdirPaths,
     localStorage,
+    openBatchButton,
     protectedCountText,
     protectedList,
     protectedListCount,
     settingsBlockReason,
     settingsMessage,
+    shellOpenCalls,
     stateAction,
+    stateDescription,
+    stateTitle,
+    window,
     get inventoryCount() { return inventoryCount; },
     get latestState() { return latestState; },
     get stateWriteCalls() { return stateWriteCalls; },
@@ -936,6 +964,107 @@ test("添加不搬动文件夹时会先转换 UXP 扩展路径", async () => {
   assert.doesNotMatch(harness.settingsMessage.textContent, /no such file|directory/i);
 });
 
+test("素材目录已经存在时仍会确认目录并正常打开", async () => {
+  const existsError = new Error("file already exists");
+  const initialState = State.createState("E:\\项目", new Date("2026-09-04T00:00:00.000Z"));
+  const harness = createProtectedFolderHarness(null, null, null, {
+    initialState,
+    mkdirError: existsError,
+  });
+  await harness.entrypoints.show();
+
+  assert.equal(harness.openBatchButton.disabled, false);
+  harness.window.listeners.get("batch-collector:open-batch")();
+  await settle();
+
+  assert.deepEqual(harness.mkdirPaths, ["E:\\项目\\素材", "E:\\项目\\素材\\001_初始素材"]);
+  assert.ok(harness.lstatPaths.includes("E:\\项目\\素材"));
+  assert.ok(harness.lstatPaths.includes("E:\\项目\\素材\\001_初始素材"));
+  assert.equal(harness.shellOpenCalls.length, 1, "确认已有目录可用后应继续打开当前素材文件夹");
+  assert.equal(harness.shellOpenCalls[0][0], "E:\\项目\\素材\\001_初始素材");
+  assert.doesNotMatch(harness.stateDescription.textContent, /file already exists/i);
+});
+
+test("素材目录没有权限时暂停并只显示中文，不继续打开目录", async () => {
+  const denied = Object.assign(new Error("permission denied"), { code: "EACCES" });
+  const initialState = State.createState("E:\\项目", new Date("2026-09-04T00:00:00.000Z"));
+  const harness = createProtectedFolderHarness(null, null, null, {
+    initialState,
+    mkdirError: denied,
+  });
+  await harness.entrypoints.show();
+
+  harness.window.listeners.get("batch-collector:open-batch")();
+  await settle();
+
+  assert.equal(harness.shellOpenCalls.length, 0);
+  assert.equal(harness.stateTitle.textContent, "自动整理已暂停");
+  assert.match(harness.stateDescription.textContent, /无法使用当前素材文件夹/);
+  assert.match(harness.stateDescription.textContent, /没有移动任何素材/);
+  assert.doesNotMatch(harness.stateDescription.textContent, /permission|denied|EACCES/i);
+  assert.match(harness.diagnostics.join("\n"), /cause\.code=EACCES/);
+});
+
+test("素材目录位置被同名文件占用时不会打开或覆盖", async () => {
+  const initialState = State.createState("E:\\项目", new Date("2026-09-04T00:00:00.000Z"));
+  const harness = createProtectedFolderHarness(null, null, null, {
+    initialState,
+    mkdirError: new Error("file already exists"),
+    lstatResultForPath(nativePath) {
+      if (nativePath === "E:\\项目\\素材") return { isDirectory: () => true, isFile: () => false };
+      if (nativePath === "E:\\项目\\素材\\001_初始素材") return { isDirectory: () => false, isFile: () => true };
+      throw new Error("unexpected lstat path: " + nativePath);
+    },
+  });
+  await harness.entrypoints.show();
+
+  harness.window.listeners.get("batch-collector:open-batch")();
+  await settle();
+
+  assert.equal(harness.shellOpenCalls.length, 0);
+  assert.deepEqual(harness.mkdirPaths, ["E:\\项目\\素材", "E:\\项目\\素材\\001_初始素材"]);
+  assert.deepEqual(harness.lstatPaths, ["E:\\项目\\素材", "E:\\项目\\素材\\001_初始素材"]);
+  assert.match(harness.stateDescription.textContent, /被同名文件占用/);
+  assert.match(harness.stateDescription.textContent, /没有移动任何素材/);
+});
+
+test("三个不搬动文件夹会逐项显示名称、完整路径和管理按钮", async () => {
+  const now = new Date("2026-09-04T00:00:00.000Z");
+  let initialState = State.createState("E:\\项目", now);
+  const libraries = [
+    ["library-post-kit", "后期包", "I:\\【后期包 ver10.0】"],
+    ["library-ai-video", "AI视频制作", "I:\\AI视频制作"],
+    ["library-mineways", "Mineways 9.12汉化版本体", "I:\\Mineways 9.12汉化版本体"],
+  ];
+  libraries.forEach(function ([libraryId, label], index) {
+    initialState = State.addProtectedLibrary(initialState, libraryId, label, new Date(now.getTime() + index + 1));
+  });
+  const harness = createProtectedFolderHarness(null, null, null, {
+    initialState,
+    initialMachineSettings: {
+      autoByMediaSpace: {},
+      protectedSetupByMediaSpace: {},
+      protectedMappings: libraries.map(function ([libraryId, label, rootPath]) {
+        return { libraryId, label, rootPath };
+      }),
+    },
+  });
+  await harness.entrypoints.show();
+
+  assert.equal(harness.protectedList.tagName, "DIV");
+  assert.equal(harness.protectedListCount.textContent, "3 个");
+  assert.equal(harness.protectedList.children.length, 3);
+  harness.protectedList.children.forEach(function (row, index) {
+    const [libraryId, label, rootPath] = libraries[index];
+    assert.equal(row.tagName, "DIV");
+    assert.equal(row.getAttribute("role"), "listitem");
+    assert.match(row.textContent, new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.match(row.textContent, new RegExp(rootPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.equal(findProtectedAction(row, libraryId, "map").textContent, "更换文件夹");
+    assert.equal(findProtectedAction(row, libraryId, "remove").textContent, "从名单移除");
+  });
+});
+
 test("选择重叠文件夹时会写出已有名单路径和本次选择路径", async () => {
   const existingPath = "E:\\共享库\\后期包";
   const selectedPath = "E:\\共享库\\后期包\\音效";
@@ -1044,6 +1173,41 @@ test("确认移除只删除所选名单项并持久化，同时暂停自动整�
   } finally {
     harness.entrypoints.hide();
   }
+});
+
+test("移除名单保存失败时保留原名单并且界面不泄漏英文异常", async (t) => {
+  const variants = [
+    "permission denied while writing E:\\项目\\整理记录",
+    "无法写入整理记录：permission denied",
+  ];
+  for (const message of variants) await t.test(message, async () => {
+    const fixture = protectedRemovalFixture();
+    const harness = createProtectedFolderHarness(null, null, new Error(message), {
+      ...fixture,
+      confirmResult: true,
+      stateWriteErrorAt: 1,
+    });
+    await harness.entrypoints.show();
+
+    try {
+      const removeButton = findProtectedAction(harness.protectedList, fixture.firstId, "remove");
+      harness.protectedList.listeners.get("click")({ target: removeButton });
+      await settle();
+
+      assert.deepEqual(
+        harness.latestState.protectedLibraries.map((library) => library.libraryId),
+        [fixture.firstId, fixture.secondId],
+        "保存失败时应恢复原名单"
+      );
+      assert.match(harness.settingsMessage.textContent, /移除失败/);
+      assert.match(harness.settingsMessage.textContent, /原名单没有改变/);
+      assert.doesNotMatch(harness.settingsMessage.textContent, /permission|denied|writing/i);
+      assert.match(harness.diagnostics.join("\n"), /permission denied/);
+      assert.deepEqual(harness.fsMutationCalls, []);
+    } finally {
+      harness.entrypoints.hide();
+    }
+  });
 });
 
 test("存在未完成的文件事务或工程待保存状态时不能修改不搬动名单", async () => {

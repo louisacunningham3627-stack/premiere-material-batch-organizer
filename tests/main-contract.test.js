@@ -62,7 +62,7 @@ test("审核操作通过不透明 ID 定位，而不信任 DOM 路径", () => {
 });
 
 test("工程重新加载失败后仍可重试，轮询会处理异步拒绝", () => {
-  assert.match(source, /catch \(error\) \{\s*stateReloadRequired = true;\s*panelError = error\.message/s);
+  assert.match(source, /catch \(error\) \{\s*stateReloadRequired = true;\s*reportRuntimeError\("读取整理记录失败", error\);\s*panelError = userFacingRuntimeError/s);
   assert.match(source, /function requestScan\(options\)[\s\S]*operationQueue\.run[\s\S]*\.catch\(function \(error\)/);
 });
 

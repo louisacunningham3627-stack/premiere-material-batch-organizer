@@ -39,8 +39,21 @@
   }
 
   function isAlreadyExistsError(error) {
-    var structured = ["code", "name", "errno"].map(function (field) {
-      return readErrorField(error, field).trim().toUpperCase();
+    var sources = [];
+    var source = error;
+    for (var depth = 0; source != null && depth < 8 && sources.indexOf(source) < 0; depth += 1) {
+      sources.push(source);
+      try {
+        source = source && source.cause;
+      } catch (readCauseError) {
+        source = null;
+      }
+    }
+    var structured = [];
+    sources.forEach(function (source) {
+      ["code", "name", "errno"].forEach(function (field) {
+        structured.push(readErrorField(source, field).trim().toUpperCase());
+      });
     });
     var normalized = structured.map(function (value) { return value.replace(/[\s_-]+/g, ""); });
     var knownOtherCodes = [
@@ -54,10 +67,15 @@
     var knownExists = ["EEXIST", "FILEEXISTS", "FILEALREADYEXISTS", "ALREADYEXISTS", "FILEEXISTSERROR", "ALREADYEXISTSERROR"];
     if (normalized.some(function (value) { return knownExists.indexOf(value) >= 0; })) return true;
 
-    var numericFields = [readErrorField(error, "code"), readErrorField(error, "errno")];
-    if (typeof error === "number" || (typeof error === "string" && /^-?\d+$/.test(error.trim()))) {
-      numericFields.push(String(error));
-    }
+    var numericFields = [];
+    sources.forEach(function (source) {
+      numericFields.push(readErrorField(source, "code"), readErrorField(source, "errno"));
+    });
+    sources.forEach(function (candidate) {
+      if (typeof candidate === "number" || (typeof candidate === "string" && /^-?\d+$/.test(candidate.trim()))) {
+        numericFields.push(String(candidate));
+      }
+    });
     var knownOtherNumbers = [2, 3, 5, 13, -13, 16, -16, 28, -28, 30, -30, 32, 33, -4058, -4092];
     if (numericFields.some(function (value) {
       var number = Number(value);
@@ -69,8 +87,11 @@
       return Number.isFinite(number) && knownExistsNumbers.indexOf(number) >= 0;
     })) return true;
 
-    var parts = structured.concat([readErrorField(error, "message")]);
-    try { parts.push(error == null ? "" : String(error)); } catch (stringError) {}
+    var parts = structured.slice();
+    sources.forEach(function (source) {
+      parts.push(readErrorField(source, "message"));
+      try { parts.push(source == null ? "" : String(source)); } catch (stringError) {}
+    });
     var description = parts.join("\n").toUpperCase();
     var knownOtherMessage = /ACCESS[_ -]*DENIED|PERMISSION[_ -]*DENIED|SHARING[_ -]*VIOLATION|LOCK[_ -]*VIOLATION|(?:I\/O|IO|INPUT[ /-]*OUTPUT)[ _-]*(?:ERROR|FAIL(?:ED|URE)?)|NO SPACE LEFT|READ-ONLY FILE SYSTEM/;
     if (knownOtherMessage.test(description)) return false;
@@ -497,12 +518,12 @@
         warnings.push("状态写锁已由其他进程接管；旧 owner 只释放了自己的文件句柄，未改动当前 .lock 文件");
       }
     } catch (error) {
-      warnings.push("无法把状态写锁标记为已释放: " + (error.message || error));
+      warnings.push("无法把状态写锁标记为已释放；请关闭 Premiere 后重新检查状态锁");
     }
     try {
       await closeFileHandle(fs, lock.handle);
     } catch (error) {
-      warnings.push("关闭状态写锁失败: " + (error.message || error));
+      warnings.push("关闭状态写锁失败；请关闭 Premiere 后重新检查状态锁");
     }
     return warnings.join("; ");
   }
@@ -645,8 +666,7 @@
         // 再让整个写入失败。
         var fallbackRevision = tempSnapshot && tempSnapshot.revision;
         if (!fallbackRevision) fallbackRevision = revisionFor(serialized, null);
-        commitWarning = "状态文件已经写入，但提交后的复核失败，已使用写入时指纹继续；请稍后重新检查（"
-          + (postCommitError.message || postCommitError) + "）";
+        commitWarning = "状态文件已经写入，但提交后的复核失败，已使用写入时指纹继续；请稍后重新检查";
         writeResult = { committed: true, revision: fallbackRevision, warning: commitWarning };
       }
       return writeResult;
@@ -681,6 +701,7 @@
     LOCK_RECORD_BYTES: LOCK_RECORD_BYTES,
     LOCK_STALE_MS: LOCK_STALE_MS,
     MISSING_REVISION: MISSING_REVISION,
+    isAlreadyExistsError: isAlreadyExistsError,
     readJsonWithBackup: readJsonWithBackup,
     statePath: statePath,
     writeJsonAtomic: writeJsonAtomic,
