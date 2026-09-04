@@ -285,18 +285,34 @@
     return projectFolder;
   }
 
-  function padBatchIndex(index) {
-    return String(Math.max(1, Math.floor(Number(index) || 1))).padStart(3, "0");
-  }
-
   function localDateStamp(date) {
     var value = date instanceof Date ? date : new Date(date || Date.now());
     return [value.getFullYear(), String(value.getMonth() + 1).padStart(2, "0"), String(value.getDate()).padStart(2, "0")].join("-");
   }
 
-  function batchName(index, date) {
-    var safeIndex = Math.max(1, Math.floor(Number(index) || 1));
-    return padBatchIndex(safeIndex) + "_" + (safeIndex === 1 ? "初始素材" : localDateStamp(date));
+  function localChineseDateStamp(date) {
+    var value = date instanceof Date ? date : new Date(date || Date.now());
+    return value.getFullYear() + "年"
+      + String(value.getMonth() + 1).padStart(2, "0") + "月"
+      + String(value.getDate()).padStart(2, "0") + "日";
+  }
+
+  function batchName(index, date, existingNames) {
+    var value = date instanceof Date ? date : new Date(date || Date.now());
+    var used = new Set((existingNames || []).map(function (name) { return String(name); }));
+    var datePart = localChineseDateStamp(value);
+    var candidates = [
+      datePart + "添加素材",
+      datePart + " " + String(value.getHours()).padStart(2, "0") + "时" + String(value.getMinutes()).padStart(2, "0") + "分添加素材",
+      datePart + " " + String(value.getHours()).padStart(2, "0") + "时" + String(value.getMinutes()).padStart(2, "0") + "分" + String(value.getSeconds()).padStart(2, "0") + "秒添加素材",
+      datePart + " " + String(value.getHours()).padStart(2, "0") + "时" + String(value.getMinutes()).padStart(2, "0") + "分" + String(value.getSeconds()).padStart(2, "0") + "秒" + String(value.getMilliseconds()).padStart(3, "0") + "毫秒添加素材",
+    ];
+    for (var candidateIndex = 0; candidateIndex < candidates.length; candidateIndex += 1) {
+      if (!used.has(candidates[candidateIndex])) return candidates[candidateIndex];
+    }
+    var error = new Error("同一时刻已经建立了交接文件夹，请稍后再试");
+    error.code = "MATERIAL_BATCH_NAME_COLLISION";
+    throw error;
   }
 
   function isSameVolume(left, right, platform) {
@@ -354,7 +370,7 @@
     }
     if (isUnsafeLinkedAsset(nativePath)) return { kind: "review", reason: "动态链接或工程型素材暂不自动移动" };
     if (isPotentialImageSequence(nativePath)) return { kind: "review", reason: "疑似图片序列，需保留整组结构" };
-    return { kind: "collect", reason: "项目外的新素材" };
+    return { kind: "collect", reason: "工程文件夹外的普通素材" };
   }
 
   function targetNameCandidate(sourcePath, suffixIndex) {

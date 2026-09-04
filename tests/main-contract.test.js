@@ -21,7 +21,12 @@ test("状态写入使用乐观修订号和已恢复备份的上下文", () => {
   assert.match(source, /MATERIAL_BATCH_STORAGE_CONFLICT/);
   assert.match(source, /MATERIAL_BATCH_STORAGE_STALE_LOCK/);
   assert.match(source, /validate:\s*function \(value\) \{ return State\.validateStoredState\(value\); \}/);
-  assert.match(source, /loaded\.missing\s*\? State\.createState/);
+  const missingStateBranch = source.indexOf("if (loaded.missing)");
+  const existingMediaRootGuard = source.indexOf("await Transaction.exists(fs, reservedMediaRoot)", missingStateBranch);
+  const freshStateCreation = source.indexOf("State.createState(nextContext.workspaceRoot", missingStateBranch);
+  assert.ok(missingStateBranch >= 0);
+  assert.ok(existingMediaRootGuard > missingStateBranch && existingMediaRootGuard < freshStateCreation);
+  assert.match(source, /MATERIAL_BATCH_STATE_LOST/);
 });
 
 test("映射重链接会在操作前后检查已记录的目标", () => {

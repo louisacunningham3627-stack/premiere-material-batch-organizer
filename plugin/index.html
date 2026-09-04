@@ -13,7 +13,7 @@
       <div class="brand-lockup">
         <div class="brand-copy">
           <h1>素材自动整理</h1>
-          <p>新导入的素材，搬到工程旁边</p>
+          <p>工程里的素材，搬到工程旁边</p>
         </div>
       </div>
     </header>
@@ -35,7 +35,7 @@
         </div>
         <label class="toggle-row" id="autoCollectControl" for="autoCollectToggle" title="开启或暂停自动整理">
           <span class="toggle-label">自动整理</span>
-          <input id="autoCollectToggle" type="checkbox" checked aria-label="自动整理新素材">
+          <input id="autoCollectToggle" type="checkbox" checked aria-label="自动整理工程素材">
           <span class="toggle" aria-hidden="true"><span></span></span>
         </label>
       </div>
@@ -58,12 +58,11 @@
       </div>
       <div class="destination-path" title="当前交接文件夹">
         <span>磁盘位置</span>
-        <code id="batchPath">素材\004_2026-09-02</code>
+        <code id="batchPath">素材\2026年09月04日添加素材</code>
       </div>
       <div class="batch-rail" aria-hidden="true"><span class="rail-fill" id="railFill"></span></div>
       <p class="batch-summary">目前已有 <strong id="fileCount">12</strong> 个文件 · <strong id="fileSize">18.6 GB</strong></p>
-      <span class="visually-hidden" id="batchNumber">004</span>
-      <span class="visually-hidden" id="batchName">2026-09-02</span>
+      <span class="visually-hidden" id="batchName">2026年09月04日添加素材</span>
     </section>
 
     <section class="action-section" aria-label="当前交接操作">
@@ -73,7 +72,8 @@
       <button class="button button-secondary" id="handoffButton" type="button">
         <span>完成这次交接</span>
       </button>
-      <p id="handoffHint">完成后，新导入素材会进入下一个文件夹。</p>
+      <p id="handoffHint">完成后，之后识别到的素材会进入下一个文件夹。</p>
+      <p class="folder-action-message" id="folderActionMessage" role="status" aria-live="polite" hidden></p>
     </section>
 
     <button class="protection-summary" id="protectedCount" type="button" aria-controls="settingsPage" aria-expanded="false">
@@ -89,7 +89,7 @@
       </div>
       <div class="activity-list" id="activityList" role="list" aria-live="polite">
         <div class="activity-item" role="listitem"><span class="activity-bullet success"></span><div><strong>已连接当前工程</strong><small>刚刚 · 自动整理已开启</small></div></div>
-        <div class="activity-item" role="listitem"><span class="activity-bullet"></span><div><strong>等待新素材</strong><small>新导入的文件会自动整理</small></div></div>
+        <div class="activity-item" role="listitem"><span class="activity-bullet"></span><div><strong>等待工程素材</strong><small>已有和以后新增的外部素材都会自动整理</small></div></div>
       </div>
     </section>
   </main>
@@ -104,7 +104,7 @@
       </div>
 
       <h2 class="settings-page-title" id="settingsHeading">管理不搬动文件夹</h2>
-      <p class="settings-intro"><strong>名单里的素材不会移动</strong><span>名单外的新素材才会搬到当前交接文件夹。你可以随时更换文件夹或从名单移除，磁盘文件不会被删除。</span></p>
+      <p class="settings-intro"><strong>名单里的素材不会移动</strong><span>名单外、工程中引用的普通素材会搬到当前交接文件夹。你可以随时更换文件夹或从名单移除，磁盘文件不会被删除。</span></p>
 
       <div class="settings-message" id="settingsMessage" role="status" aria-live="polite" aria-atomic="true" hidden></div>
 
@@ -162,7 +162,7 @@
 
       <section class="settings-rules" aria-labelledby="settingsRulesHeading">
         <h3 id="settingsRulesHeading">整理规则</h3>
-        <p>第一次开启只记录已有素材；以后新导入的素材才会整理。</p>
+        <p>工程里已经引用和以后新增的普通素材都会整理；只有“不搬动文件夹”里的素材保持原位。</p>
         <p>整理后，原位置不保留文件。插件确认 Premiere 已重新链接并保存后，才会删除跨盘源文件。</p>
       </section>
     </div>
@@ -172,14 +172,15 @@
     (() => {
       const stateData = {
         setup: { title: '先设置不搬动文件夹', desc: '后期包、共享音效库等要保持原位的文件夹，请先加入名单。没有也可以直接继续。', status: '尚未设置', files: '0', size: '0 B', progress: 0, kind: 'onboarding', action: '设置不搬动文件夹', intent: 'settings', icon: 'shield', auto: false, onboarding: 'protection', project: '城市纪录片_EP03.prproj', meta: '工程路径已识别', path: 'D:\\剪辑项目\\城市纪录片_EP03.prproj', activity: [] },
-        activate: { title: '不搬动名单已确认', desc: '现在可以开启自动整理。第一次开启只记录已有素材，不会移动它们。', status: '等待开启', files: '0', size: '0 B', progress: 0, kind: 'onboarding', action: '开启自动整理', intent: 'auto', icon: 'check', auto: false, onboarding: 'auto', project: '城市纪录片_EP03.prproj', meta: '工程路径已识别', path: 'D:\\剪辑项目\\城市纪录片_EP03.prproj', activity: [] },
-        ready: { title: '自动整理已开启', desc: '新导入的原始素材和下载素材会自动放入下面的文件夹；共享素材库保持原位。', status: '自动整理中', files: '12', size: '18.6 GB', progress: 0, kind: 'ready', action: '', intent: '', icon: 'check', auto: true, project: '城市纪录片_EP03.prproj', meta: '工程路径已识别', path: 'D:\\剪辑项目\\城市纪录片_EP03.prproj', activity: [['已连接当前工程', '刚刚 · 自动整理已开启'], ['等待新素材', '新导入的文件会自动整理']] },
+        activate: { title: '不搬动名单已确认', desc: '现在可以开启自动整理。工程里已有和以后新增的外部素材都会搬入当前文件夹。', status: '等待开启', files: '0', size: '0 B', progress: 0, kind: 'onboarding', action: '开启自动整理', intent: 'auto', icon: 'check', auto: false, onboarding: 'auto', project: '城市纪录片_EP03.prproj', meta: '工程路径已识别', path: 'D:\\剪辑项目\\城市纪录片_EP03.prproj', activity: [] },
+        policy: { title: '现有素材还没有整理', desc: '新版会把当前工程已经引用、但仍在工程文件夹外的普通素材也搬入。确认不搬动名单无误后再开始。', status: '等待确认', files: '1', size: '5.40 GB', progress: 0, kind: 'onboarding', action: '开始整理现有素材', intent: 'policy', icon: 'check', auto: false, project: '城市纪录片_EP03.prproj', meta: '工程路径已识别', path: 'D:\\剪辑项目\\城市纪录片_EP03.prproj', activity: [['发现 1 个现有素材', '仍在原位置，等待你确认'], ['不搬动文件夹继续生效', '名单里的素材不会移动']] },
+        ready: { title: '自动整理已开启', desc: '工程里已有和以后新增的原始素材、下载素材都会放入下面的文件夹；不搬动文件夹保持原位。', status: '自动整理中', files: '12', size: '18.6 GB', progress: 0, kind: 'ready', action: '', intent: '', icon: 'check', auto: true, project: '城市纪录片_EP03.prproj', meta: '工程路径已识别', path: 'D:\\剪辑项目\\城市纪录片_EP03.prproj', activity: [['已连接当前工程', '刚刚 · 自动整理已开启'], ['等待工程素材', '已有和以后新增的外部素材都会自动整理']] },
         empty: { title: '请先打开 Premiere 工程', desc: '打开工程后，插件才能找到需要整理的素材。', status: '等待工程', files: '0', size: '0 B', progress: 0, kind: 'empty', action: '重新检查', intent: 'refresh', icon: 'folder', auto: false, project: '未打开工程', meta: '等待连接', path: '', activity: [['等待 Premiere 工程', '打开工程后再重新检查']] },
         unsaved: { title: '请先保存工程', desc: '保存后，插件才能在工程旁边建立素材文件夹。', status: '等待保存', files: '0', size: '0 B', progress: 0, kind: 'warning', action: '重新检查', intent: 'refresh', icon: 'alert', auto: false, project: '城市纪录片_EP03', meta: '尚未保存', path: '', activity: [['工程尚未保存', '保存后再重新检查']] },
-        running: { title: '正在检查新素材', desc: '正在识别刚刚导入到工程里的文件。', status: '检查中', files: '12', size: '18.6 GB', progress: 46, kind: 'running', action: '', intent: '', icon: 'refresh', auto: true, project: '城市纪录片_EP03.prproj', meta: '工程路径已识别', path: 'D:\\剪辑项目\\城市纪录片_EP03.prproj', activity: [['正在检查新素材', '已检查 12 个文件'], ['共享素材保持原位', '后期包等文件夹不会移动']] },
+        running: { title: '正在检查工程素材', desc: '正在识别工程里引用的外部文件。', status: '检查中', files: '12', size: '18.6 GB', progress: 46, kind: 'running', action: '', intent: '', icon: 'refresh', auto: true, project: '城市纪录片_EP03.prproj', meta: '工程路径已识别', path: 'D:\\剪辑项目\\城市纪录片_EP03.prproj', activity: [['正在检查工程素材', '已检查 12 个文件'], ['共享素材保持原位', '后期包等文件夹不会移动']] },
         waiting: { title: '正在等待文件写完', desc: '这个文件仍在下载或写入，会保持在原位置；写完后自动重试。', status: '等待写完', files: '12', size: '18.6 GB', progress: 0, kind: 'waiting', action: '', intent: '', icon: 'file', auto: true, project: '城市纪录片_EP03.prproj', meta: '工程路径已识别', path: 'D:\\剪辑项目\\城市纪录片_EP03.prproj', activity: [['采访录音_修正版.wav 仍在写入', '文件保持在原位置'], ['无需手动处理', '写完后会自动重新检查']] },
         moving: { title: '正在移动素材', desc: '确认新位置可用、Premiere 已重新链接并保存后，才会删除原文件。', status: '移动中', files: '8 / 12', size: '11.2 / 18.6 GB', progress: 68, kind: 'moving', action: '', intent: '', icon: 'refresh', auto: true, project: '城市纪录片_EP03.prproj', meta: '工程路径已识别', path: 'D:\\剪辑项目\\城市纪录片_EP03.prproj', activity: [['正在移动第 8 个文件', '已完成 68%'], ['原位置文件暂时保留', '等待 Premiere 重新链接并保存']] },
-        paused: { title: '自动整理已暂停', desc: '新导入素材暂时留在原位置，已整理的文件不会重复移动。', status: '已暂停', files: '8', size: '11.2 GB', progress: 0, kind: 'warning', action: '继续自动整理', intent: 'resume', icon: 'pause', auto: false, project: '城市纪录片_EP03.prproj', meta: '工程路径已识别', path: 'D:\\剪辑项目\\城市纪录片_EP03.prproj', activity: [['自动整理已暂停', '新素材暂时留在原位置'], ['已完成的文件不受影响', '可以安全关闭面板']] },
+        paused: { title: '自动整理已暂停', desc: '工程外的素材暂时留在原位置，已整理的文件不会重复移动。', status: '已暂停', files: '8', size: '11.2 GB', progress: 0, kind: 'warning', action: '继续自动整理', intent: 'resume', icon: 'pause', auto: false, project: '城市纪录片_EP03.prproj', meta: '工程路径已识别', path: 'D:\\剪辑项目\\城市纪录片_EP03.prproj', activity: [['自动整理已暂停', '工程外素材暂时留在原位置'], ['已完成的文件不受影响', '可以安全关闭面板']] },
         protected: { title: '共享素材已留在原位', desc: '3 个素材来自“不搬动文件夹”，其余素材照常整理。', status: '自动整理中', files: '9', size: '14.1 GB', progress: 0, kind: 'protected', action: '查看不搬动文件夹', intent: 'settings', icon: 'shield', auto: true, project: '城市纪录片_EP03.prproj', meta: '工程路径已识别', path: 'D:\\剪辑项目\\城市纪录片_EP03.prproj', activity: [['3 个共享素材未移动', '后期包 · 共享音效库 · 品牌字库'], ['其余 9 个文件已整理', '可以继续导入素材']] },
         runtimeerror: { title: '自动整理已暂停', desc: '无法使用当前素材文件夹，插件没有移动任何素材。请检查磁盘连接和文件夹权限后重新检查。', status: '已暂停', files: '0', size: '0 B', progress: 0, kind: 'danger', action: '重新检查', intent: 'refresh', icon: 'alert', auto: false, project: '城市纪录片_EP03.prproj', meta: '工程路径已识别', path: 'D:\\剪辑项目\\城市纪录片_EP03.prproj', activity: [['自动整理已暂停', '本次没有移动任何素材'], ['等待重新检查', '确认磁盘连接和文件夹权限后重试']] },
         conflict: {
@@ -211,7 +212,7 @@
               type: '历史位置',
               filename: '主镜头.mov',
               source: 'F:\\下载素材\\主镜头.mov',
-              target: 'D:\\剪辑项目\\素材\\003_2026-09-01\\主镜头.mov',
+              target: 'D:\\剪辑项目\\素材\\2026年09月01日添加素材\\主镜头.mov',
               reason: '记录中的新位置文件尚未验证，不能自动让 Premiere 使用。',
               actions: [['mapping-confirm', '确认使用', 'primary'], ['retry', '重新检查', 'secondary']],
             },
@@ -344,8 +345,8 @@
         action.dataset.previewIntent = data.intent;
         qs('autoCollectToggle').checked = data.auto;
         renderReviews(data.reviews);
-        qs('autoCollectToggle').disabled = ['setup', 'activate', 'empty', 'unsaved', 'running', 'moving', 'conflict', 'failure', 'savefailed'].includes(name);
-        const locked = ['setup', 'activate', 'empty', 'unsaved', 'running', 'waiting', 'moving', 'conflict', 'failure', 'savefailed'].includes(name);
+        qs('autoCollectToggle').disabled = ['setup', 'activate', 'policy', 'empty', 'unsaved', 'running', 'moving', 'conflict', 'failure', 'savefailed'].includes(name);
+        const locked = ['setup', 'activate', 'policy', 'empty', 'unsaved', 'running', 'waiting', 'moving', 'conflict', 'failure', 'savefailed'].includes(name);
         qs('openBatchButton').disabled = ['setup', 'activate', 'empty', 'unsaved', 'running', 'moving'].includes(name);
         qs('handoffButton').disabled = locked;
         qs('handoffHint').textContent = name === 'waiting'
@@ -354,7 +355,7 @@
             ? '素材整理完成后才能交接。'
           : ['conflict', 'failure', 'savefailed'].includes(name)
             ? '先完成上面的处理，才能完成交接。'
-            : '完成后，新导入素材会进入下一个文件夹。';
+            : '完成后，之后识别到的素材会进入下一个文件夹。';
         const list = qs('activityList');
         while (list.firstChild) list.removeChild(list.firstChild);
         data.activity.forEach((activity, index) => {
@@ -414,7 +415,7 @@
       qs('stateAction').addEventListener('click', () => {
         const intent = qs('stateAction').dataset.previewIntent;
         if (document.body.classList.contains('preview-mode') && intent === 'settings') openSettingsPage();
-        if (document.body.classList.contains('preview-mode') && intent === 'auto') setState('ready');
+        if (document.body.classList.contains('preview-mode') && (intent === 'auto' || intent === 'policy')) setState('ready');
         if (document.body.classList.contains('preview-mode') && intent === 'activity') showActivity();
         if (intent === 'review') showReviews();
         window.dispatchEvent(new CustomEvent('batch-collector:state-action', { detail: { state: document.body.dataset.state } }));

@@ -11,6 +11,7 @@
   "use strict";
 
   var SCHEMA_VERSION = 1;
+  var COLLECTION_POLICY_VERSION = 2;
   var HISTORY_LIMIT = 200;
   var TRANSACTION_LIMIT = 100;
 
@@ -43,6 +44,7 @@
       workspaceName: Core.basename(workspaceRoot),
       mediaFolderName: "素材",
       initialized: false,
+      collectionPolicyVersion: COLLECTION_POLICY_VERSION,
       currentBatchIndex: 1,
       batches: [initialBatch(now)],
       protectedLibraries: [],
@@ -100,6 +102,21 @@
     return Boolean(value && typeof value === "object" && !Array.isArray(value));
   }
 
+  function collectionPolicyStatus(raw) {
+    if (!isRecord(raw) || !Object.prototype.hasOwnProperty.call(raw, "collectionPolicyVersion")) return "legacy";
+    var version = Number(raw.collectionPolicyVersion);
+    if (!Number.isFinite(version) || version > COLLECTION_POLICY_VERSION) return "future";
+    if (version < 1 || Math.floor(version) !== version) return "invalid";
+    return "supported";
+  }
+
+  function unsupportedCollectionPolicyError() {
+    var error = new Error("素材空间由更新版本的整理规则创建，当前插件不会降级或覆盖它");
+    error.code = "MATERIAL_BATCH_STATE_POLICY_UNSUPPORTED";
+    error.preventBackupFallback = true;
+    return error;
+  }
+
   function hasPortableFingerprint(value) {
     if (!isRecord(value)) return false;
     var size = Number(value.size);
@@ -109,6 +126,8 @@
 
   function isCompatibleState(raw) {
     if (!isRecord(raw) || raw.schemaVersion !== SCHEMA_VERSION) return false;
+    var policyStatus = collectionPolicyStatus(raw);
+    if (policyStatus === "future" || policyStatus === "invalid") return false;
     if (typeof raw.mediaSpaceId !== "string" || !raw.mediaSpaceId) return false;
     if (typeof raw.mediaFolderName !== "string") return false;
     if (!Array.isArray(raw.batches) || !raw.batches.length) return false;
@@ -133,10 +152,12 @@
       error.preventBackupFallback = true;
       throw error;
     }
+    if (collectionPolicyStatus(raw) === "future") throw unsupportedCollectionPolicyError();
     return isCompatibleState(raw);
   }
 
   function hydrateState(raw, workspaceRoot, now) {
+    if (collectionPolicyStatus(raw) === "future") throw unsupportedCollectionPolicyError();
     if (!isCompatibleState(raw)) {
       var error = new Error(raw && raw.schemaVersion !== undefined && raw.schemaVersion !== SCHEMA_VERSION
         ? "素材空间状态版本不受当前插件支持，已停止自动整理"
@@ -152,6 +173,8 @@
     state.workspaceName = typeof raw.workspaceName === "string" && raw.workspaceName ? raw.workspaceName : state.workspaceName;
     state.mediaFolderName = typeof raw.mediaFolderName === "string" && Core.isSafePathSegment(raw.mediaFolderName) ? raw.mediaFolderName : "素材";
     state.initialized = raw.initialized === true;
+    state.collectionPolicyVersion = Math.max(1, Math.floor(Number(raw.collectionPolicyVersion)
+      || (state.initialized ? 1 : COLLECTION_POLICY_VERSION)));
     state.batches = Array.isArray(raw.batches) && raw.batches.length
       ? raw.batches.map(function (batch) { return validBatch(batch, now); })
       : [initialBatch(now)];
@@ -373,19 +396,37 @@
     return touch(next, at);
   }
 
-  function initializeBaseline(state, entries, classifications, at) {
+  function initializeCollection(state, entries, classifications, at) {
     var next = clone(state);
     (entries || []).forEach(function (entry, index) {
       var pathKey = Core.normalizePathForComparison(entry.mediaPath);
-      var classification = classifications[index] || { kind: "baseline" };
+      var classification = classifications[index] || { kind: "collect" };
       next.knownMedia[pathKey] = {
         path: entry.mediaPath,
-        status: classification.kind === "collect" ? "baseline" : classification.kind,
+        status: classification.kind,
         lastSeenAt: iso(at),
         sourceFingerprint: entry.sourceFingerprint ? clone(entry.sourceFingerprint) : {},
       };
     });
     next.initialized = true;
+    next.collectionPolicyVersion = COLLECTION_POLICY_VERSION;
+    return touch(next, at);
+  }
+
+  function initializeBaseline(state, entries, classifications, at) {
+    return initializeCollection(state, entries, classifications, at);
+  }
+
+  function needsCollectionPolicyAcceptance(state) {
+    return Boolean(state
+      && state.initialized === true
+      && Math.max(1, Math.floor(Number(state.collectionPolicyVersion) || 1)) < COLLECTION_POLICY_VERSION);
+  }
+
+  function acceptCollectionPolicy(state, at) {
+    if (collectionPolicyStatus(state) === "future") throw unsupportedCollectionPolicyError();
+    var next = clone(state);
+    next.collectionPolicyVersion = COLLECTION_POLICY_VERSION;
     return touch(next, at);
   }
 
@@ -565,7 +606,7 @@
     var nextIndex = Math.max.apply(null, next.batches.map(function (batch) { return batch.index; })) + 1;
     next.batches.push({
       index: nextIndex,
-      name: Core.batchName(nextIndex, at),
+      name: Core.batchName(nextIndex, at, next.batches.map(function (batch) { return batch.name; })),
       status: "open",
       createdAt: iso(at),
       lockedAt: "",
@@ -607,7 +648,9 @@
 
   return {
     HISTORY_LIMIT: HISTORY_LIMIT,
+    COLLECTION_POLICY_VERSION: COLLECTION_POLICY_VERSION,
     SCHEMA_VERSION: SCHEMA_VERSION,
+    acceptCollectionPolicy: acceptCollectionPolicy,
     addActivity: addActivity,
     addProtectedLibrary: addProtectedLibrary,
     beginProjectSave: beginProjectSave,
@@ -618,12 +661,14 @@
     currentBatchPath: currentBatchPath,
     failTransaction: failTransaction,
     hydrateState: hydrateState,
+    initializeCollection: initializeCollection,
     initializeBaseline: initializeBaseline,
     lockAndCreateNextBatch: lockAndCreateNextBatch,
     markCleanupPending: markCleanupPending,
     markKnown: markKnown,
     markProjectBaseline: markProjectBaseline,
     mappingMovedAfterProjectBaseline: mappingMovedAfterProjectBaseline,
+    needsCollectionPolicyAcceptance: needsCollectionPolicyAcceptance,
     projectHasBaseline: projectHasBaseline,
     projectBaselineMatches: projectBaselineMatches,
     projectBaselineStatus: projectBaselineStatus,

@@ -34,6 +34,7 @@
   var busyStage = "";
   var panelError = "";
   var storageWarning = "";
+  var folderActionMessage = "";
   var settingsMessage = "";
   var settingsMessageKind = "";
   var scanTimer = null;
@@ -390,7 +391,7 @@
       var title = document.createElement("strong");
       title.textContent = context ? "等待开启自动整理" : "等待 Premiere 工程";
       var detail = document.createElement("small");
-      detail.textContent = context ? "第一次开启只记录现有素材，不会移动它们" : "打开并保存工程后再重新检查";
+      detail.textContent = context ? "工程里已有和以后新增的外部素材都会按规则整理" : "打开并保存工程后再重新检查";
       copy.appendChild(title);
       copy.appendChild(detail);
       empty.appendChild(bullet);
@@ -632,7 +633,7 @@
         view = { mode: "failure", kind: "danger", title: "自动整理已暂停", description: activePanelError, status: "已暂停", action: "重新检查", icon: "alert" };
       } else if (busy) {
         var stageText = {
-          scan: "正在检查新素材",
+          scan: "正在检查工程素材",
           move: "正在移动素材",
           copy: "正在跨盘复制素材",
           relink: "正在更新 Premiere 链接",
@@ -648,15 +649,17 @@
       } else if (reviewCount > 0) {
         view = { mode: "conflict", kind: "danger", title: "有 " + reviewCount + " 个素材需要确认", description: "这些文件还在原位置，请逐项确认后继续。", status: "需要处理", action: "查看待确认素材", icon: "alert" };
       } else if (!projectState.initialized) {
-        view = { mode: "setup", kind: "onboarding", title: "不搬动名单已确认", description: "现在可以开启自动整理。第一次开启只记录已有素材，不会移动它们。", status: "等待开启", action: "开启自动整理", icon: "check" };
+        view = { mode: "setup", kind: "onboarding", title: "不搬动名单已确认", description: "现在可以开启自动整理。工程里已有和以后新增的外部素材都会搬入当前文件夹。", status: "等待开启", action: "开启自动整理", icon: "check" };
+      } else if (State.needsCollectionPolicyAcceptance(projectState)) {
+        view = { mode: "policy", kind: "onboarding", title: "现有素材还没有整理", description: "新版会把当前工程已经引用、但仍在工程文件夹外的普通素材也搬入。确认不搬动名单无误后再开始。", status: "等待确认", action: "开始整理现有素材", icon: "check" };
       } else if (!currentAutoSetting()) {
-        view = { mode: "paused", kind: "warning", title: "自动整理已暂停", description: pendingCount ? pendingCount + " 个新素材仍在原位置等待整理。" : "新导入素材暂时留在原位置。", status: "已暂停", action: "继续自动整理", icon: "pause" };
+        view = { mode: "paused", kind: "warning", title: "自动整理已暂停", description: pendingCount ? pendingCount + " 个素材仍在原位置等待整理。" : "工程外的素材暂时留在原位置。", status: "已暂停", action: "继续自动整理", icon: "pause" };
       } else if (pendingCount > 0) {
         view = { mode: "waiting", kind: "warning", title: "正在等待 " + pendingCount + " 个文件写完", description: "文件仍在下载或写入，暂时留在原位置；稳定后会自动整理。", status: "等待写完", action: "", icon: "refresh" };
       } else if (lastProtectedCount > 0) {
         view = { mode: "protected", kind: "protected", title: "共享素材已留在原位", description: lastProtectedCount + " 个素材来自“不搬动文件夹”，其余素材照常整理。", status: "自动整理中", action: "查看不搬动文件夹", icon: "shield" };
       } else {
-        view = { mode: "ready", kind: "ready", title: "自动整理已开启", description: "新导入的原始素材和下载素材会自动放入下面的文件夹；共享素材库保持原位。", status: "自动整理中", action: "", icon: "check" };
+        view = { mode: "ready", kind: "ready", title: "自动整理已开启", description: "工程里已有和以后新增的原始素材、下载素材都会放入下面的文件夹；不搬动文件夹保持原位。", status: "自动整理中", action: "", icon: "check" };
       }
     }
 
@@ -695,8 +698,7 @@
     if (projectName) projectName.title = context ? (context.projectPath || context.projectName || "") : "";
 
     var batch = projectState ? State.currentBatch(projectState) : null;
-    setText("batchNumber", batch ? String(batch.index).padStart(3, "0") : "---");
-    setText("batchName", batch ? batch.name.replace(/^\d{3}_/, "") : "等待工程");
+    setText("batchName", batch ? batch.name : "等待工程");
     var batchHeading = element("batchHeading");
     if (batchHeading) batchHeading.setAttribute("aria-label", batch ? "当前交接文件夹：" + relativeBatchPath() : "等待工程");
     setText("fileCount", batch ? batch.fileCount : 0);
@@ -708,7 +710,7 @@
     var autoToggle = element("autoCollectToggle");
     if (autoToggle) {
       autoToggle.checked = currentAutoSetting();
-      autoToggle.disabled = !context || !context.projectPath || !projectState || !currentProtectionSetup() || !projectState.initialized || Boolean(projectState && (projectState.pendingTransaction || projectState.pendingProjectSave)) || Boolean(activePanelError) || Boolean(unresolved && unresolved.length) || busy;
+      autoToggle.disabled = !context || !context.projectPath || !projectState || !currentProtectionSetup() || !projectState.initialized || State.needsCollectionPolicyAcceptance(projectState) || Boolean(projectState && (projectState.pendingTransaction || projectState.pendingProjectSave)) || Boolean(activePanelError) || Boolean(unresolved && unresolved.length) || busy;
     }
     var openButton = element("openBatchButton");
     if (openButton) openButton.disabled = !context || !context.projectPath || busy;
@@ -720,7 +722,12 @@
       ? "素材整理完成后才能交接。"
       : handoffBlockedByProblem
         ? "先完成上面的处理，才能完成交接。"
-        : "完成后，新导入素材会进入下一个文件夹。");
+        : "完成后，之后识别到的素材会进入下一个文件夹。");
+    var folderMessage = element("folderActionMessage");
+    if (folderMessage) {
+      folderMessage.hidden = !folderActionMessage;
+      folderMessage.textContent = folderActionMessage;
+    }
     var refreshButton = element("refreshButton");
     if (refreshButton) refreshButton.disabled = busy;
     renderActivity();
@@ -741,9 +748,19 @@
     storageWarning = loaded.recovered && loaded.revision === undefined
       ? "主状态文件当前无法读取，请恢复访问权限后重新检查；为避免覆盖记录，自动整理已暂停"
       : "";
-    var state = loaded.missing
-      ? State.createState(nextContext.workspaceRoot, new Date())
-      : State.hydrateState(loaded.value, nextContext.workspaceRoot, new Date());
+    var state;
+    if (loaded.missing) {
+      var reservedMediaRoot = Core.joinNativePath(nextContext.workspaceRoot, "素材");
+      if (await Transaction.exists(fs, reservedMediaRoot)) {
+        var missingStateError = new Error("当前工程的“素材”文件夹已经存在，但整理记录和备份都找不到。为避免混用旧文件夹，自动整理已停止；请先恢复整理记录。确认这里从未使用过插件时，再把现有“素材”文件夹移出后重新检查。");
+        missingStateError.code = "MATERIAL_BATCH_STATE_LOST";
+        missingStateError.mediaRoot = reservedMediaRoot;
+        throw missingStateError;
+      }
+      state = State.createState(nextContext.workspaceRoot, new Date());
+    } else {
+      state = State.hydrateState(loaded.value, nextContext.workspaceRoot, new Date());
+    }
     state = State.registerProject(state, nextContext.projectPath, nextContext.projectName, new Date());
     if (loaded.recovered) state = State.addActivity(state, "warn", "状态文件已从备份读取", new Date());
     return state;
@@ -789,7 +806,10 @@
     stopMonitor(false);
     context = next;
     projectState = null;
-    if (changed) setSettingsMessage("", "");
+    if (changed) {
+      setSettingsMessage("", "");
+      folderActionMessage = "";
+    }
     stateRevision = Storage.MISSING_REVISION;
     stateRecoveredFromBackup = false;
     protectedMappingValidation = { validMappings: [], unresolved: [], statusById: {} };
@@ -813,6 +833,7 @@
     lastProtectedCount = 0;
     if (projectState && (projectState.pendingTransaction || projectState.pendingProjectSave || storageWarning || !currentProtectionSetup())) setMachineSetting("auto", false);
     if (projectState && unresolvedProtectedLibraries().length) setMachineSetting("auto", false);
+    if (projectState && State.needsCollectionPolicyAcceptance(projectState)) setMachineSetting("auto", false);
     syncMonitor();
     render();
     return context;
@@ -1270,11 +1291,10 @@
       stabilityTracker.retain(observedCollectionPaths);
 
       if (!projectState.initialized) {
-        if (scanOptions.initializeBaseline === true) {
-          projectState = State.initializeBaseline(projectState, groups, classifications, new Date());
-          projectState = State.markProjectBaseline(projectState, context.projectPath, groups, new Date());
-          projectState = State.addActivity(projectState, "ok", "已建立现有素材基线", new Date(), {
-            summary: groups.length + " 条路径，旧引用未移动",
+        if (scanOptions.initializeCollection === true) {
+          projectState = State.initializeCollection(projectState, groups, classifications, new Date());
+          projectState = State.addActivity(projectState, "ok", "已开始整理工程素材", new Date(), {
+            summary: groups.length + " 条路径将按当前规则检查",
           });
           await ensureBatchDirectories();
           await persistState();
@@ -1285,7 +1305,6 @@
       }
 
       var dirtyState = false;
-      var firstProjectScan = !State.projectHasBaseline(projectState, context.projectPath);
       for (var index = 0; index < groups.length; index += 1) {
         var group = groups[index];
         var classification = classifications[index];
@@ -1340,8 +1359,6 @@
         }
 
         if (classification.kind === "review") {
-          var reviewBaselineStatus = State.projectBaselineStatus(projectState, context.projectPath, group.mediaPath, group.sourceFingerprint);
-          if (firstProjectScan || reviewBaselineStatus === "match") continue;
           if (recordReview(group, "review", {
             type: "整组素材",
             reason: classification.reason,
@@ -1352,29 +1369,12 @@
           continue;
         }
 
-        if (firstProjectScan) {
-          continue;
-        }
-
         if (!ScanPolicy.hasPortableFingerprint(group.sourceFingerprint)) {
           if (recordReview(group, "source-unavailable", {
             type: "无法读取",
             reason: "当前无法读取这个文件的大小和修改时间，插件不会冒险移动。",
             revealPath: Core.dirname(group.mediaPath),
             actions: [["reveal", "打开所在位置", "secondary"], ["retry", "重新检查", "secondary"]],
-          })) dirtyState = true;
-          continue;
-        }
-        var baselineStatus = State.projectBaselineStatus(projectState, context.projectPath, group.mediaPath, group.sourceFingerprint);
-        var movedAfterBaseline = State.mappingMovedAfterProjectBaseline(projectState, context.projectPath, mappingsForKey(key));
-        if (baselineStatus === "match" && !movedAfterBaseline) continue;
-        if (baselineStatus === "unverified") {
-          if (recordReview(group, "baseline-unverified", {
-            type: "首次识别",
-            reason: "这个工程的旧记录缺少可核对的文件信息，不能判断它原本是否就在工程中。",
-            sourceFingerprint: group.sourceFingerprint,
-            revealPath: Core.dirname(group.mediaPath),
-            actions: [["baseline-keep", "视为原有素材", "secondary"], ["baseline-move", "整理这个文件", "primary"]],
           })) dirtyState = true;
           continue;
         }
@@ -1388,14 +1388,6 @@
           throw error;
         }
         pendingCount = Math.max(0, pendingCount - 1);
-        dirtyState = true;
-      }
-
-      if (firstProjectScan) {
-        projectState = State.markProjectBaseline(projectState, context.projectPath, groups, new Date());
-        projectState = State.addActivity(projectState, "ok", "已接入同目录中的另一个工程版本", new Date(), {
-          summary: "已记住现有素材，以后只整理新导入素材",
-        });
         dirtyState = true;
       }
 
@@ -1583,6 +1575,14 @@
       return;
     }
 
+    if (enabled && State.needsCollectionPolicyAcceptance(projectState)) {
+      projectState = State.acceptCollectionPolicy(projectState, new Date());
+      projectState = State.addActivity(projectState, "ok", "已确认整理工程现有素材", new Date(), {
+        summary: "不搬动文件夹仍保持原位",
+      });
+      await persistState();
+    }
+
     setMachineSetting("auto", enabled);
     if (!enabled) {
       stopMonitor(false);
@@ -1593,7 +1593,7 @@
     }
 
     panelError = "";
-    var initialScan = await scanUnlocked({ initializeBaseline: !projectState.initialized });
+    var initialScan = await scanUnlocked({ initializeCollection: !projectState.initialized });
     if (!initialScan || !initialScan.ok) {
       setMachineSetting("auto", false);
       stopMonitor(false);
@@ -1617,16 +1617,23 @@
     });
   }
 
+  async function openDirectory(nativePath, label) {
+    if (!Core.isAbsoluteLocalPath(nativePath)) throw new Error("无法确定要打开的文件夹");
+    var result = await uxp.shell.openPath(nativePath, label);
+    if (result) throw new Error(String(result));
+  }
+
   async function openCurrentBatch() {
+    folderActionMessage = "";
     await operationQueue.run(async function () {
       await refreshContext();
       if (!context || !projectState) throw new Error("没有可打开的素材文件夹");
       await ensureBatchDirectories();
-      var result = await uxp.shell.openPath(batchPath(), "打开本批素材");
-      if (result) throw new Error(String(result));
+      await openDirectory(batchPath(), "打开当前素材文件夹");
+      render();
     }).catch(function (error) {
       reportRuntimeError("打开当前素材文件夹失败", error);
-      panelError = userFacingRuntimeError(error, "无法打开当前素材文件夹，请检查工程所在磁盘是否已连接后重试。");
+      folderActionMessage = userFacingRuntimeError(error, "无法打开当前素材文件夹，请检查工程所在磁盘是否已连接后重试。");
       render();
     });
   }
@@ -1868,7 +1875,7 @@
       busyStage = "handoff";
       render();
       if (!scanResult || !scanResult.ok || panelError || storageWarning) throw new Error(scanResult && scanResult.error ? scanResult.error : "交接前检查失败");
-      if (pendingCount > 0) throw new Error("仍有 " + pendingCount + " 个新素材没有整理完成");
+      if (pendingCount > 0) throw new Error("仍有 " + pendingCount + " 个素材没有整理完成");
       if (reviewCount > 0) throw new Error("仍有 " + reviewCount + " 个素材需要确认");
       if (projectState.pendingTransaction) throw new Error("存在未收口的文件事务");
       var previous = State.currentBatch(projectState);
@@ -2106,9 +2113,7 @@
 
   async function revealReviewLocation(review) {
     var revealPath = String(review && review.revealPath || "");
-    if (!Core.isAbsoluteLocalPath(revealPath)) throw new Error("无法确定要打开的文件夹");
-    var result = await uxp.shell.openPath(revealPath, "打开素材所在位置");
-    if (result) throw new Error(String(result));
+    await openDirectory(revealPath, "打开素材所在位置");
   }
 
   async function currentFileFingerprint(nativePath) {
@@ -2145,7 +2150,10 @@
       await refreshContext();
       var review = reviewItems.find(function (candidate) { return candidate.id === reviewId; });
       if (!review) throw new Error("这条待确认素材已变化，请重新检查");
-      if (action === "reveal") return revealReviewLocation(review);
+      if (action === "reveal") {
+        folderActionMessage = "";
+        return revealReviewLocation(review);
+      }
       if (action === "retry") return scanUnlocked({ skipRefresh: true });
       if (!projectState || !context || !context.projectPath) throw new Error("当前 Premiere 工程不可用");
 
@@ -2195,7 +2203,11 @@
       throw new Error("无法识别这项确认操作");
     }).catch(function (error) {
       reportRuntimeError("处理待确认素材失败", error);
-      panelError = userFacingRuntimeError(error, "这项素材没有处理完成，自动整理仍保持暂停。请重新检查后再试。");
+      if (action === "reveal") {
+        folderActionMessage = userFacingRuntimeError(error, "无法打开素材所在文件夹，请检查磁盘是否已连接后重试。");
+      } else {
+        panelError = userFacingRuntimeError(error, "这项素材没有处理完成，自动整理仍保持暂停。请重新检查后再试。");
+      }
     }).finally(function () {
       syncMonitor();
       render();
@@ -2205,7 +2217,7 @@
   async function handleStateAction() {
     var action = element("stateAction");
     var intent = action ? action.dataset.intent : "";
-    if (intent === "开启自动整理" || intent === "继续自动整理") return setAutomatic(true);
+    if (intent === "开启自动整理" || intent === "继续自动整理" || intent === "开始整理现有素材") return setAutomatic(true);
     if (intent === "设置不搬动文件夹" || intent === "选择文件夹" || intent === "查看不搬动文件夹") return openSettingsPage();
     if (intent === "查看待确认素材") return openReviewList();
     if (intent === "查看最近记录") return openActivityLog();

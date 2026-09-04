@@ -5,11 +5,12 @@ const State = require("../src/state");
 const now = new Date("2026-09-02T02:00:00.000Z");
 
 test("创建一个共享初始批次且不复制 .prproj", () => {
-  const state = State.createState("I:\\剪辑\\新手", now);
+  const createdAt = new Date(2026, 8, 4, 10, 0, 0);
+  const state = State.createState("I:\\剪辑\\新手", createdAt);
   assert.equal(state.batches.length, 1);
-  assert.equal(state.batches[0].name, "001_初始素材");
+  assert.equal(state.batches[0].name, "2026年09月04日添加素材");
   assert.equal(JSON.stringify(state).includes(".prproj"), false);
-  assert.equal(State.currentBatchPath(state, "I:\\剪辑\\新手"), "I:\\剪辑\\新手\\素材\\001_初始素材");
+  assert.equal(State.currentBatchPath(state, "I:\\剪辑\\新手"), "I:\\剪辑\\新手\\素材\\2026年09月04日添加素材");
 });
 
 test("多个 .prproj 名称会注册到同一素材空间", () => {
@@ -20,7 +21,7 @@ test("多个 .prproj 名称会注册到同一素材空间", () => {
   assert.equal(state.mediaSpaceId.startsWith("media-"), true);
 });
 
-test("基线会标记现有外部素材但不会移动它", () => {
+test("首次收集会保留分类结果，不再把现有外部素材改写成 baseline", () => {
   let state = State.createState("I:\\项目", now);
   state = State.initializeBaseline(
     state,
@@ -29,8 +30,32 @@ test("基线会标记现有外部素材但不会移动它", () => {
     now,
   );
   assert.equal(state.initialized, true);
-  assert.equal(state.knownMedia["c:\\downloads\\old.mp4"].status, "baseline");
+  assert.equal(state.knownMedia["c:\\downloads\\old.mp4"].status, "collect");
   assert.equal(state.knownMedia["i:\\项目\\素材\\old.wav"].status, "managed");
+});
+
+test("旧 baseline 接受现有素材归集策略时幂等且不删除原路径证据", () => {
+  const projectPath = "I:\\项目\\剪辑-v1.prproj";
+  const mediaPath = "C:\\Downloads\\legacy.mp4";
+  const fingerprint = { size: 4096, mtimeMs: 1000, ctimeMs: 900 };
+  let raw = State.createState("I:\\项目", now);
+  raw.initialized = true;
+  delete raw.collectionPolicyVersion;
+  raw = State.registerProject(raw, projectPath, "剪辑-v1.prproj", now);
+  raw = State.markProjectBaseline(raw, projectPath, [{ mediaPath, sourceFingerprint: fingerprint }], now);
+
+  let hydrated = State.hydrateState(raw, "I:\\项目", now);
+  assert.equal(State.needsCollectionPolicyAcceptance(hydrated), true);
+  assert.equal(State.projectBaselineStatus(hydrated, projectPath, mediaPath, fingerprint), "match");
+
+  hydrated = State.acceptCollectionPolicy(hydrated, now);
+  assert.equal(State.needsCollectionPolicyAcceptance(hydrated), false);
+  assert.equal(hydrated.collectionPolicyVersion, State.COLLECTION_POLICY_VERSION);
+  assert.equal(State.projectBaselineStatus(hydrated, projectPath, mediaPath, fingerprint), "match");
+
+  const acceptedAgain = State.acceptCollectionPolicy(hydrated, now);
+  assert.equal(acceptedAgain.collectionPolicyVersion, State.COLLECTION_POLICY_VERSION);
+  assert.deepEqual(acceptedAgain.projects, hydrated.projects);
 });
 
 test("提交事务会记录路径映射和批次总计", () => {
@@ -307,6 +332,29 @@ test("可解析但不完整或来自未来版本的状态不会恢复为新素�
   );
 });
 
+test("未来整理策略不会被当前版本接受或降级", () => {
+  for (const futureVersion of [State.COLLECTION_POLICY_VERSION + 1, "999", Infinity]) {
+    const future = State.createState("I:\\项目", now);
+    future.initialized = true;
+    future.collectionPolicyVersion = futureVersion;
+
+    assert.equal(State.isCompatibleState(future), false);
+    assert.throws(
+      () => State.validateStoredState(future),
+      (error) => error.code === "MATERIAL_BATCH_STATE_POLICY_UNSUPPORTED"
+        && error.preventBackupFallback === true,
+    );
+    assert.throws(
+      () => State.hydrateState(future, "I:\\项目", now),
+      (error) => error.code === "MATERIAL_BATCH_STATE_POLICY_UNSUPPORTED",
+    );
+    assert.throws(
+      () => State.acceptCollectionPolicy(future, now),
+      (error) => error.code === "MATERIAL_BATCH_STATE_POLICY_UNSUPPORTED",
+    );
+  }
+});
+
 test("等待 Premiere 保存的状态会在恢复后保留并阻断文件事务", () => {
   let state = State.createState("I:\\项目", now);
   state = State.beginProjectSave(state, {
@@ -341,17 +389,62 @@ test("恢复状态时会拒绝可能越出素材根目录的旁路文件路径",
   const hydrated = State.hydrateState(raw, "I:\\项目", now);
 
   assert.equal(hydrated.mediaFolderName, "素材");
-  assert.equal(hydrated.batches[0].name, "001_初始素材");
+  assert.equal(hydrated.batches[0].name, State.createState("I:\\项目", now).batches[0].name);
   assert.equal(hydrated.pathMappings["c:\\downloads\\unsafe.mp4"], undefined);
   assert.equal(hydrated.pathMappings["c:\\downloads\\safe.mp4"].length, 1);
 });
 
-test("完成交接只锁定当前批次并创建下一个日期批次", () => {
-  let state = State.createState("I:\\项目", now);
-  state = State.lockAndCreateNextBatch(state, now);
+test("同日交接使用稳定的非序号名称，跨日恢复中文日期基础名", () => {
+  const morning = new Date(2026, 8, 4, 9, 0, 0);
+  let state = State.createState("I:\\项目", morning);
+  const firstName = state.batches[0].name;
+  state = State.lockAndCreateNextBatch(state, new Date(2026, 8, 4, 14, 5, 0));
   assert.equal(state.batches[0].status, "locked");
-  assert.equal(state.batches[1].name, "002_2026-09-02");
+  const secondName = state.batches[1].name;
+  assert.notEqual(secondName, firstName);
+  assert.match(secondName, /2026年09月04日/);
+  assert.match(secondName, /添加素材/);
+  assert.doesNotMatch(secondName, /^\d+_|第\d+次/);
   assert.equal(State.currentBatch(state).index, 2);
+
+  state = State.lockAndCreateNextBatch(state, new Date(2026, 8, 4, 14, 6, 0));
+  const thirdName = state.batches[2].name;
+  assert.notEqual(thirdName, firstName);
+  assert.notEqual(thirdName, secondName);
+  assert.doesNotMatch(thirdName, /^\d+_|第\d+次/);
+  assert.equal(State.currentBatch(state).index, 3, "内部批次 ID 仍应稳定递增");
+
+  state = State.lockAndCreateNextBatch(state, new Date(2026, 8, 5, 9, 0, 0));
+  assert.equal(state.batches[3].name, "2026年09月05日添加素材");
+  assert.equal(State.currentBatch(state).index, 4);
+});
+
+test("恢复合法旧批次时不改名，只让后续新批次使用新格式", () => {
+  const raw = State.createState("I:\\项目", new Date(2026, 8, 3, 9, 0, 0));
+  raw.batches = [
+    { ...raw.batches[0], index: 1, name: "001_初始素材", status: "locked" },
+    { ...raw.batches[0], index: 2, name: "002_2026-09-03", status: "open" },
+  ];
+  raw.currentBatchIndex = 2;
+  raw.pathMappings = {
+    "c:\\downloads\\legacy.mp4": {
+      sourcePath: "C:\\Downloads\\legacy.mp4",
+      targetRelativePath: "素材\\001_初始素材\\legacy.mp4",
+    },
+  };
+
+  let hydrated = State.hydrateState(raw, "I:\\项目", new Date(2026, 8, 4, 9, 0, 0));
+  assert.deepEqual(hydrated.batches.map((batch) => batch.name), ["001_初始素材", "002_2026-09-03"]);
+  assert.equal(State.currentBatchPath(hydrated, "I:\\项目"), "I:\\项目\\素材\\002_2026-09-03");
+  assert.equal(
+    hydrated.pathMappings["c:\\downloads\\legacy.mp4"][0].targetRelativePath,
+    "素材\\001_初始素材\\legacy.mp4",
+  );
+
+  hydrated = State.lockAndCreateNextBatch(hydrated, new Date(2026, 8, 4, 15, 0, 0));
+  assert.deepEqual(hydrated.batches.slice(0, 2).map((batch) => batch.name), ["001_初始素材", "002_2026-09-03"]);
+  assert.match(hydrated.batches[2].name, /2026年09月04日/);
+  assert.doesNotMatch(hydrated.batches[2].name, /^\d+_/);
 });
 
 test("恢复状态时，即使路径变化也会保留保护素材库 ID", () => {
@@ -359,7 +452,10 @@ test("恢复状态时，即使路径变化也会保留保护素材库 ID", () =>
   state = State.addProtectedLibrary(state, "post-kit-v10", "后期包 v10", now);
   const handedOff = State.hydrateState(state, "E:\\接手\\项目", now);
   assert.deepEqual(handedOff.protectedLibraries, [{ libraryId: "post-kit-v10", label: "后期包 v10" }]);
-  assert.equal(State.currentBatchPath(handedOff, "E:\\接手\\项目"), "E:\\接手\\项目\\素材\\001_初始素材");
+  assert.equal(
+    State.currentBatchPath(handedOff, "E:\\接手\\项目"),
+    "E:\\接手\\项目\\素材\\" + State.currentBatch(state).name,
+  );
 });
 
 test("恢复旧 Windows 状态键时按素材真实路径迁移，且相对路径比较兼容旧反斜杠", () => {

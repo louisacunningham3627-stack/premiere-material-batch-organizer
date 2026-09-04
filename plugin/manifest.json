@@ -3,7 +3,7 @@
   "id": "com.hechao.premiere.material-batch-organizer",
   "name": "赫朝素材自动整理",
   "shortname": "素材自动整理",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "main": "index.html",
   "host": {
     "app": "premierepro",
@@ -13,7 +13,7 @@
     "localFileSystem": "fullAccess",
     "launchProcess": {
       "schemes": ["file"],
-      "extensions": []
+      "extensions": [""]
     }
   },
   "entrypoints": [

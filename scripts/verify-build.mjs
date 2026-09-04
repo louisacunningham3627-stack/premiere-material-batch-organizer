@@ -38,6 +38,7 @@ assert.equal(manifest.host.app, "premierepro");
 assert.equal(manifest.host.minVersion, "25.6.0");
 assert.equal(manifest.requiredPermissions.localFileSystem, "fullAccess");
 assert.deepEqual(manifest.requiredPermissions.launchProcess.schemes, ["file"]);
+assert.deepEqual(manifest.requiredPermissions.launchProcess.extensions, [""], "必须允许打开无扩展名的素材文件夹");
 assert.equal(manifest.entrypoints[0].id, "materialBatchOrganizer");
 assert.equal(manifest.version, packageJson.version);
 

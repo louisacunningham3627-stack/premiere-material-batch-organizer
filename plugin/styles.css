@@ -128,6 +128,7 @@ body[data-state="running"] .batch-rail, body[data-state="moving"] .batch-rail { 
 .button-secondary:hover:not(:disabled) { border-color: rgba(255,255,255,.3); background: var(--ink-800); }
 .button:disabled { cursor: not-allowed; opacity: .42; }
 .action-section > p { width: 100%; flex: 0 0 100%; margin-top: 8px; color: var(--text-tertiary); font-size: 11px; line-height: 1.4; text-align: center; }
+.action-section > .folder-action-message { padding: 8px 9px; border: 1px solid rgba(224,122,115,.34); border-radius: var(--radius-control); background: rgba(224,122,115,.08); color: var(--text-primary); text-align: left; }
 body[data-state="conflict"] .action-section > .button-primary,
 body[data-state="failure"] .action-section > .button-primary,
 body[data-state="savefailed"] .action-section > .button-primary { border-color: var(--border-strong); background: var(--surface-raised); color: var(--text-secondary); }

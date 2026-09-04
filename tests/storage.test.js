@@ -145,6 +145,25 @@ test("主状态损坏时恢复有效备份", async () => {
   });
 });
 
+test("主状态来自未来整理策略时不会回退到旧备份", async () => {
+  await withFolder(async (statePath) => {
+    const current = State.createState("I:\\项目", new Date("2026-09-04T00:00:00.000Z"));
+    const future = { ...current, collectionPolicyVersion: State.COLLECTION_POLICY_VERSION + 1 };
+    const primaryText = JSON.stringify(future);
+    const backupText = JSON.stringify(current);
+    await fs.writeFile(statePath, primaryText, "utf8");
+    await fs.writeFile(statePath + ".bak", backupText, "utf8");
+
+    await assert.rejects(
+      Storage.readJsonWithBackup(fs, statePath, { validate: State.validateStoredState }),
+      (error) => error.code === "MATERIAL_BATCH_STATE_POLICY_UNSUPPORTED"
+        && error.preventBackupFallback === true,
+    );
+    assert.equal(await fs.readFile(statePath, "utf8"), primaryText);
+    assert.equal(await fs.readFile(statePath + ".bak", "utf8"), backupText);
+  });
+});
+
 test("首次原子写入会创建可恢复同一状态的永久备份", async () => {
   await withFolder(async (statePath) => {
     await Storage.writeJsonAtomic(fs, statePath, { version: 1, ready: true });

@@ -60,11 +60,11 @@ test("使用 Premiere Auto-Save 的父目录作为共享工作区", () => {
   assert.equal(Core.workspaceRootForProject("I:\\剪辑\\新手\\新手-01.prproj"), "I:\\剪辑\\新手");
 });
 
-test("创建浅层交接批次名称", () => {
-  const date = new Date(2026, 8, 2, 10, 0, 0);
-  assert.equal(Core.batchName(1, date), "001_初始素材");
-  assert.equal(Core.batchName(2, date), "002_2026-09-02");
-  assert.equal(Core.batchName(12, date), "012_2026-09-02");
+test("新批次基础名称使用中文日期且没有数字前缀", () => {
+  const date = new Date(2026, 8, 4, 10, 0, 0);
+  const name = Core.batchName(1, date);
+  assert.equal(name, "2026年09月04日添加素材");
+  assert.doesNotMatch(name, /^\d+_/);
 });
 
 test("统一识别 Node、UXP 和 Windows 的明确缺失路径错误", () => {
