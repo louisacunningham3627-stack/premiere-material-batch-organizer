@@ -2,6 +2,19 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const Premiere = require("../src/premiere-adapter");
 
+test("预览检测只读取时间线和源监视器位置，不发播放或暂停命令", async () => {
+  let ticks = "12345678901234567890";
+  const project = { async getActiveSequence() { return { guid: "sequence", async getPlayerPosition() { return { ticks }; } }; } };
+  const ppro = { SourceMonitor: { async getProjectItem() { return { async getId() { return "source"; } }; },
+    async getPosition() { return { ticks: "9000" }; }, play() { assert.fail("不控制播放"); } } };
+  const before = await Premiere.previewPosition(ppro, project);
+  assert.equal(before, "sequence:sequence:12345678901234567890|source:source:9000");
+  ticks = "12345678901234567891";
+  assert.notEqual(await Premiere.previewPosition(ppro, project), before);
+  assert.equal(await Premiere.previewPosition({}, { async getActiveSequence() { return null; } }), "");
+  assert.equal(await Premiere.previewPosition({}, { async getActiveSequence() { throw new Error("unavailable"); } }), null);
+});
+
 test("Premiere 素材清单不完整时无法通过扫描安全门槛", async () => {
   const unreadableClip = {
     getId: () => "clip-1",

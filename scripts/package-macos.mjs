@@ -39,7 +39,7 @@ await assertNoSymlinks(source, "dist 构建树");
 await rm(outputRoot, { recursive: true, force: true });
 await mkdir(outputRoot, { recursive: true });
 await mkdir(pluginFolder, { recursive: true });
-await cp(source, pluginFolder, { recursive: true });
+await cp(source, pluginFolder, { recursive: true, filter: (entry) => path.relative(source, entry).split(path.sep)[0] !== "native" });
 const bundleSources = [
   ["scripts/install-user-plugin-macos.sh", "安装-macOS.sh"],
   ["scripts/uninstall-user-plugin-macos.sh", "卸载-macOS.sh"],

@@ -29,12 +29,25 @@ function fakeProjectItem(initialPath) {
 }
 
 async function withTempFolder(run) {
-  const folder = await fs.mkdtemp(path.join(os.tmpdir(), "premiere-batch-test-"));
+  const root = path.resolve(__dirname, "../work/transaction-tests");
+  await fs.mkdir(root, { recursive: true });
+  const folder = await fs.mkdtemp(path.join(root, "run-"));
   try {
     await run(folder);
   } finally {
     await fs.rm(folder, { recursive: true, force: true });
   }
+}
+
+async function fakeRecycle(folder) {
+  const root = path.join(folder, "test-recycle");
+  await fs.mkdir(root, { recursive: true });
+  return async ({ path: source }) => {
+    const target = path.join(root, path.basename(source));
+    assert.equal(await Transaction.exists(fs, target), false);
+    await fs.rename(source, target);
+    return { status: "recycled", path: source, receiptId: "test-receipt", testRecyclePath: target };
+  };
 }
 
 async function createCleanupEvidence(folder, fileName, content) {
@@ -59,6 +72,7 @@ test("复制模式会依次校验、重链接全部工程项目、保存并删�
     const second = fakeProjectItem(source);
     let saves = 0;
     const result = await Transaction.moveAndRelink({
+      recycle: await fakeRecycle(folder),
       fs,
       sourcePath: source,
       targetPath: target,
@@ -86,6 +100,7 @@ test("整理操作必须移动文件，因此拒绝保留源文件", async () =>
     await fs.writeFile(source, "voice");
     const item = fakeProjectItem(source);
     await assert.rejects(Transaction.moveAndRelink({
+      recycle: await fakeRecycle(folder),
       fs,
       sourcePath: source,
       targetPath: target,
@@ -129,6 +144,7 @@ test("重链接前置失败不会被误记为 Premiere 已改链", async (t) => 
       let thrown;
       try {
         await Transaction.moveAndRelink({
+      recycle: await fakeRecycle(folder),
           fs,
           sourcePath: source,
           targetPath: target,
@@ -175,6 +191,7 @@ test("重链接前置失败不会被误记为 Premiere 已改链", async (t) => 
       };
 
       const result = await Transaction.moveAndRelink({
+      recycle: await fakeRecycle(folder),
         fs,
         sourcePath: source,
         targetPath: target,
@@ -212,6 +229,7 @@ test("重链接前置失败不会被误记为 Premiere 已改链", async (t) => 
       let thrown;
       try {
         await Transaction.moveAndRelink({
+      recycle: await fakeRecycle(folder),
           fs,
           sourcePath: source,
           targetPath: target,
@@ -254,6 +272,7 @@ test("重链接前置失败不会被误记为 Premiere 已改链", async (t) => 
       let thrown;
       try {
         await Transaction.moveAndRelink({
+      recycle: await fakeRecycle(folder),
           fs,
           sourcePath: source,
           targetPath: target,
@@ -300,6 +319,7 @@ test("改链前素材已经被用户改到第三路径时，不改链、不保�
     };
 
     await assert.rejects(Transaction.moveAndRelink({
+      recycle: await fakeRecycle(folder),
       fs,
       sourcePath: source,
       targetPath: target,
@@ -319,8 +339,28 @@ test("改链前素材已经被用户改到第三路径时，不改链、不保�
   });
 });
 
+test("复制期间开始预览时保留目标和原件，不改链、不保存、不回收", async () => {
+  await withTempFolder(async folder => {
+    const source = path.join(folder, "source.wav"), target = path.join(folder, "target.wav");
+    await fs.writeFile(source, "isolated-preview-fixture");
+    const item = { async canChangeMediaPath() { return true; },
+      async changeMediaFilePath() { assert.fail("预览中不能改链"); },
+      async getMediaFilePath() { return source; }, async isOffline() { return false; } };
+    const result = await Transaction.moveAndRelink({ fs, sourcePath: source, targetPath: target,
+      projectItems: [item], forceMode: "copy", validate: async () => true,
+      deferSaveAndCleanup: true, shouldDeferRelink: async () => true,
+      persistProject: async () => { assert.fail("未改链不能保存"); },
+      recycle: async () => { assert.fail("尚未保存不能回收"); }, wait: async () => {} });
+    assert.equal(result.awaitingProjectSave, true);
+    assert.equal(result.linksReady, false);
+    assert.equal(result.sourceRetained, true);
+    assert.equal(await fs.readFile(source, "utf8"), "isolated-preview-fixture");
+    assert.equal(await fs.readFile(target, "utf8"), "isolated-preview-fixture");
+  });
+});
+
 test("refreshMedia 失败后以路径和在线状态决定继续或保留现场", async (t) => {
-  await t.test("目标路径在线时带警告完成事务", async () => {
+  await t.test("目标路径已在线时不强制重载素材", async () => {
     await withTempFolder(async (folder) => {
       const source = path.join(folder, "source.mp4");
       const target = path.join(folder, "batch", "source.mp4");
@@ -331,12 +371,13 @@ test("refreshMedia 失败后以路径和在线状态决定继续或保留现场"
       const item = {
         async canChangeMediaPath() { return true; },
         async changeMediaFilePath(nextPath) { mediaPath = nextPath; return true; },
-        async refreshMedia() { throw new Error("refresh unavailable"); },
+        async refreshMedia() { assert.fail("已经在线的素材不能再次强制重载"); },
         async getMediaFilePath() { return mediaPath; },
         async isOffline() { return false; },
       };
 
       const result = await Transaction.moveAndRelink({
+      recycle: await fakeRecycle(folder),
         fs,
         sourcePath: source,
         targetPath: target,
@@ -352,7 +393,7 @@ test("refreshMedia 失败后以路径和在线状态决定继续或保留现场"
       assert.equal(await Transaction.exists(fs, source), false);
       assert.equal(await Transaction.exists(fs, target), true);
       assert.ok(Array.isArray(result.warnings));
-      assert.ok(result.warnings.some((warning) => /刷新|refreshMedia/.test(warning)));
+      assert.deepEqual(result.warnings, []);
     });
   });
 
@@ -374,6 +415,7 @@ test("refreshMedia 失败后以路径和在线状态决定继续或保留现场"
       let thrown;
       try {
         await Transaction.moveAndRelink({
+      recycle: await fakeRecycle(folder),
           fs,
           sourcePath: source,
           targetPath: target,
@@ -433,6 +475,7 @@ test("未指定模式时事务使用已读取的源文件和目标目录卷证�
     await fs.mkdir(path.dirname(target), { recursive: true });
     await fs.writeFile(source, "same-volume");
     const result = await Transaction.moveAndRelink({
+      recycle: await fakeRecycle(folder),
       fs,
       sourcePath: source,
       targetPath: target,
@@ -445,361 +488,6 @@ test("未指定模式时事务使用已读取的源文件和目标目录卷证�
     assert.equal(result.modeEvidence.proven, true);
     assert.equal(result.modeEvidence.sourceDev, result.modeEvidence.targetDev);
   });
-});
-
-test("源文件删除失败时保持 cleanup-pending，而不会报告成功", async () => {
-  await withTempFolder(async (folder) => {
-    const source = path.join(folder, "source.mp4");
-    const target = path.join(folder, "batch", "source.mp4");
-    await fs.mkdir(path.dirname(target), { recursive: true });
-    await fs.writeFile(source, "video");
-    const item = fakeProjectItem(source);
-    const failingFs = {
-      ...fs,
-      rename: async (nativePath, nextPath) => {
-        if (nativePath === source && nextPath.endsWith(".pending-delete")) throw new Error("file is in use");
-        return fs.rename(nativePath, nextPath);
-      },
-    };
-
-    const result = await Transaction.moveAndRelink({
-      fs: failingFs,
-      sourcePath: source,
-      targetPath: target,
-      projectItems: [item],
-      forceMode: "copy",
-      validate: async () => true,
-      persistProject: async () => true,
-      wait: async () => {},
-    });
-
-    assert.equal(result.cleanupPending, true);
-    assert.match(result.cleanupWarning, /待删除的原素材仍在/);
-    assert.equal(await Transaction.exists(fs, source), true);
-    assert.equal(await Transaction.exists(fs, target), true);
-    assert.equal(item.currentPath(), target);
-  });
-});
-
-test("隔离后无法删除的源文件仍可恢复", async () => {
-  await withTempFolder(async (folder) => {
-    const source = path.join(folder, "source.mp4");
-    const target = path.join(folder, "batch", "source.mp4");
-    const transactionId = "tx-locked-cleanup";
-    const cleanupPath = Transaction.cleanupPathFor(source, transactionId);
-    await fs.mkdir(path.dirname(target), { recursive: true });
-    await fs.writeFile(source, "video");
-    const item = fakeProjectItem(source);
-    const failingFs = {
-      ...fs,
-      unlink: async (nativePath) => {
-        if (nativePath === cleanupPath) throw new Error("file is in use");
-        return fs.unlink(nativePath);
-      },
-    };
-
-    const result = await Transaction.moveAndRelink({
-      id: transactionId,
-      fs: failingFs,
-      sourcePath: source,
-      targetPath: target,
-      cleanupPath,
-      projectItems: [item],
-      forceMode: "copy",
-      validate: async () => true,
-      persistProject: async () => true,
-      wait: async () => {},
-    });
-
-    assert.equal(result.cleanupPending, true);
-    assert.match(result.cleanupWarning, new RegExp(cleanupPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-    assert.equal(await Transaction.exists(fs, source), false);
-    assert.equal(await fs.readFile(cleanupPath, "utf8"), "video");
-    assert.equal(await fs.readFile(target, "utf8"), "video");
-    assert.equal(item.currentPath(), target);
-  });
-});
-
-test("恢复阶段的小文件清理必须经过隔离和重复核验", async (t) => {
-  await t.test("源文件身份稳定时先隔离再删除", async () => {
-    await withTempFolder(async (folder) => {
-      const source = path.join(folder, "source.txt");
-      const cleanupPath = Transaction.cleanupPathFor(source, "cleanup-normal");
-      await fs.writeFile(source, "small-file");
-      const sourceFingerprint = Transaction.fingerprintFromStat(await fs.lstat(source));
-      const evidence = await createCleanupEvidence(folder, "source.txt", "small-file");
-      const events = [];
-      const trackingFs = {
-        ...fs,
-        async rename(from, to) {
-          events.push(["rename", from, to]);
-          return fs.rename(from, to);
-        },
-        async unlink(nativePath) {
-          events.push(["unlink", nativePath]);
-          return fs.unlink(nativePath);
-        },
-      };
-
-      const result = await Transaction.cleanupVerifiedSource({
-        id: "cleanup-normal",
-        fs: trackingFs,
-        sourcePath: source,
-        cleanupPath,
-        sourceFingerprint,
-        ...evidence,
-        validate: async () => true,
-        cleanupWait: async () => { events.push(["wait"]); },
-      });
-
-      assert.equal(result.cleanupPending, false);
-      assert.equal(result.sourceChanged, false);
-      assert.equal(result.cleanupWarning, "");
-      assert.equal(result.remainingSourcePath, "");
-      assert.deepEqual(events.map((event) => event[0]), ["rename", "wait", "unlink"]);
-      assert.equal(await Transaction.exists(fs, source), false);
-      assert.equal(await Transaction.exists(fs, cleanupPath), false);
-    });
-  });
-
-  await t.test("原位置文件身份变化时保留新文件", async () => {
-    await withTempFolder(async (folder) => {
-      const source = path.join(folder, "source.txt");
-      const cleanupPath = Transaction.cleanupPathFor(source, "cleanup-source-changed");
-      await fs.writeFile(source, "original");
-      const sourceFingerprint = Transaction.fingerprintFromStat(await fs.lstat(source));
-      const evidence = await createCleanupEvidence(folder, "source.txt", "original");
-      await fs.writeFile(source, "replacement-file");
-      let renameCalls = 0;
-      let unlinkCalls = 0;
-      const trackingFs = {
-        ...fs,
-        async rename(...args) { renameCalls += 1; return fs.rename(...args); },
-        async unlink(...args) { unlinkCalls += 1; return fs.unlink(...args); },
-      };
-
-      const result = await Transaction.cleanupVerifiedSource({
-        id: "cleanup-source-changed",
-        fs: trackingFs,
-        sourcePath: source,
-        cleanupPath,
-        sourceFingerprint,
-        ...evidence,
-        validate: async () => true,
-        cleanupWait: async () => {},
-      });
-
-      assert.equal(result.cleanupPending, false);
-      assert.equal(result.sourceChanged, true);
-      assert.equal(result.remainingSourcePath, source);
-      assert.match(result.cleanupWarning, /原路径.*另一份文件|未删除这份新文件/);
-      assert.equal(renameCalls, 0);
-      assert.equal(unlinkCalls, 0);
-      assert.equal(await fs.readFile(source, "utf8"), "replacement-file");
-      assert.equal(await Transaction.exists(fs, cleanupPath), false);
-    });
-  });
-
-  await t.test("隔离文件在稳定等待期间变化时保留 cleanup", async () => {
-    await withTempFolder(async (folder) => {
-      const source = path.join(folder, "source.txt");
-      const cleanupPath = Transaction.cleanupPathFor(source, "cleanup-mutated");
-      await fs.writeFile(source, "original");
-      const sourceFingerprint = Transaction.fingerprintFromStat(await fs.lstat(source));
-      const evidence = await createCleanupEvidence(folder, "source.txt", "original");
-      let unlinkCalls = 0;
-      const trackingFs = {
-        ...fs,
-        async unlink(...args) { unlinkCalls += 1; return fs.unlink(...args); },
-      };
-
-      const result = await Transaction.cleanupVerifiedSource({
-        id: "cleanup-mutated",
-        fs: trackingFs,
-        sourcePath: source,
-        cleanupPath,
-        sourceFingerprint,
-        ...evidence,
-        validate: async () => true,
-        cleanupWait: async () => { await fs.writeFile(cleanupPath, "changed-during-wait"); },
-      });
-
-      assert.equal(result.cleanupPending, true);
-      assert.equal(result.sourceChanged, false);
-      assert.equal(result.remainingSourcePath, cleanupPath);
-      assert.match(result.cleanupWarning, /仍在|未自动删除/);
-      assert.equal(unlinkCalls, 0);
-      assert.equal(await Transaction.exists(fs, source), false);
-      assert.equal(await fs.readFile(cleanupPath, "utf8"), "changed-during-wait");
-    });
-  });
-
-  await t.test("活动工程在最终删除前切换时保留 cleanup", async () => {
-    await withTempFolder(async (folder) => {
-      const source = path.join(folder, "source.txt");
-      const cleanupPath = Transaction.cleanupPathFor(source, "cleanup-context-change");
-      await fs.writeFile(source, "original");
-      const sourceFingerprint = Transaction.fingerprintFromStat(await fs.lstat(source));
-      const evidence = await createCleanupEvidence(folder, "source.txt", "original");
-      let validations = 0;
-      let unlinkCalls = 0;
-      const trackingFs = {
-        ...fs,
-        async unlink(...args) { unlinkCalls += 1; return fs.unlink(...args); },
-      };
-
-      const result = await Transaction.cleanupVerifiedSource({
-        id: "cleanup-context-change",
-        fs: trackingFs,
-        sourcePath: source,
-        cleanupPath,
-        sourceFingerprint,
-        ...evidence,
-        validate: async () => {
-          validations += 1;
-          return validations < 3;
-        },
-        cleanupWait: async () => {},
-      });
-
-      assert.equal(validations, 3);
-      assert.equal(result.cleanupPending, true);
-      assert.equal(result.sourceChanged, false);
-      assert.equal(result.remainingSourcePath, cleanupPath);
-      assert.match(result.cleanupWarning, /仍在|未自动删除/);
-      assert.equal(unlinkCalls, 0);
-      assert.equal(await Transaction.exists(fs, source), false);
-      assert.equal(await fs.readFile(cleanupPath, "utf8"), "original");
-    });
-  });
-});
-
-test("moveAndRelink 删除前的最终核验会拦住竞态变化", async (t) => {
-  await t.test("目标被同大小同修改时间的另一文件替换时保留 cleanup", async () => {
-    await withTempFolder(async (folder) => {
-      const source = path.join(folder, "source.mp4");
-      const target = path.join(folder, "batch", "source.mp4");
-      const cleanupPath = Transaction.cleanupPathFor(source, "move-target-replaced");
-      const replacementPath = target + ".replacement";
-      await fs.mkdir(path.dirname(target), { recursive: true });
-      await fs.writeFile(source, "original");
-      const item = fakeProjectItem(source);
-      let expectedTargetFingerprint = null;
-      let targetReplaced = false;
-      let originalDeleteCalls = 0;
-      const racingFs = {
-        ...fs,
-        async lstat(nativePath) {
-          const stat = await fs.lstat(nativePath);
-          if (targetReplaced && nativePath === target) {
-            stat.mtimeMs = expectedTargetFingerprint.mtimeMs;
-            stat.ctimeMs = (Number(expectedTargetFingerprint.ctimeMs) || 1) + 1;
-            stat.ino = (Number(expectedTargetFingerprint.ino) || 1) + 1;
-          }
-          return stat;
-        },
-        async unlink(nativePath) {
-          if (nativePath === source || nativePath === cleanupPath) originalDeleteCalls += 1;
-          return fs.unlink(nativePath);
-        },
-      };
-
-      const result = await Transaction.moveAndRelink({
-        id: "move-target-replaced",
-        fs: racingFs,
-        sourcePath: source,
-        targetPath: target,
-        cleanupPath,
-        projectItems: [item],
-        forceMode: "copy",
-        validate: async () => true,
-        persistProject: async () => true,
-        wait: async () => {},
-        cleanupWait: async () => {},
-        beforeDelete: async (details) => {
-          expectedTargetFingerprint = details.targetFingerprint;
-          await fs.writeFile(replacementPath, Buffer.alloc(expectedTargetFingerprint.size, 0x78));
-          await fs.utimes(
-            replacementPath,
-            new Date(expectedTargetFingerprint.mtimeMs),
-            new Date(expectedTargetFingerprint.mtimeMs),
-          );
-          await fs.unlink(target);
-          await fs.rename(replacementPath, target);
-          targetReplaced = true;
-          const replacementFingerprint = Transaction.fingerprintFromStat(await racingFs.lstat(target));
-          assert.equal(Transaction.samePortableFingerprint(expectedTargetFingerprint, replacementFingerprint), true);
-          assert.equal(Transaction.sameFingerprint(expectedTargetFingerprint, replacementFingerprint), false);
-          return true;
-        },
-      });
-
-      assert.equal(targetReplaced, true);
-      assert.equal(originalDeleteCalls, 0);
-      assert.equal(result.cleanupPending, true);
-      assert.match(result.cleanupWarning, /仍在|未自动删除|未删除/);
-      assert.equal(await Transaction.exists(fs, source), false);
-      assert.equal(await fs.readFile(cleanupPath, "utf8"), "original");
-      assert.equal((await fs.readFile(target)).equals(Buffer.alloc(8, 0x78)), true);
-      assert.equal(item.currentPath(), target);
-    });
-  });
-
-  for (const scenario of [
-    {
-      name: "Premiere 素材被改回源路径时保留 cleanup",
-      mutate(item, sourcePath) { item.setMediaPath(sourcePath); },
-    },
-    {
-      name: "Premiere 素材变为离线时保留 cleanup",
-      mutate(item) { item.setOffline(true); },
-    },
-  ]) {
-    await t.test(scenario.name, async () => {
-      await withTempFolder(async (folder) => {
-        const source = path.join(folder, "source.mp4");
-        const target = path.join(folder, "batch", "source.mp4");
-        const transactionId = scenario.name.includes("离线") ? "move-link-offline" : "move-link-source";
-        const cleanupPath = Transaction.cleanupPathFor(source, transactionId);
-        await fs.mkdir(path.dirname(target), { recursive: true });
-        await fs.writeFile(source, "original");
-        const item = fakeProjectItem(source);
-        let originalDeleteCalls = 0;
-        const trackingFs = {
-          ...fs,
-          async unlink(nativePath) {
-            if (nativePath === source || nativePath === cleanupPath) originalDeleteCalls += 1;
-            return fs.unlink(nativePath);
-          },
-        };
-
-        const result = await Transaction.moveAndRelink({
-          id: transactionId,
-          fs: trackingFs,
-          sourcePath: source,
-          targetPath: target,
-          cleanupPath,
-          projectItems: [item],
-          forceMode: "copy",
-          validate: async () => true,
-          persistProject: async () => true,
-          wait: async () => {},
-          cleanupWait: async () => {},
-          beforeDelete: async () => {
-            scenario.mutate(item, source);
-            return true;
-          },
-        });
-
-        assert.equal(originalDeleteCalls, 0);
-        assert.equal(result.cleanupPending, true);
-        assert.match(result.cleanupWarning, /仍在|未自动删除|未删除/);
-        assert.equal(await Transaction.exists(fs, source), false);
-        assert.equal(await fs.readFile(cleanupPath, "utf8"), "original");
-        assert.equal(await fs.readFile(target, "utf8"), "original");
-      });
-    });
-  }
 });
 
 test("beforeSourceCleanup 在源文件隔离前阻断清理", async (t) => {
@@ -837,6 +525,7 @@ test("beforeSourceCleanup 在源文件隔离前阻断清理", async (t) => {
         let guardCalls = 0;
 
         const result = await Transaction.moveAndRelink({
+      recycle: await fakeRecycle(folder),
           id: "before-source-cleanup",
           fs: trackingFs,
           sourcePath: source,
@@ -894,6 +583,7 @@ test("beforeSourceCleanup 在源文件隔离前阻断清理", async (t) => {
         let guardCalls = 0;
 
         const result = await Transaction.cleanupVerifiedSource({
+      recycle: await fakeRecycle(folder),
           id: "before-source-cleanup-recovery",
           fs: trackingFs,
           sourcePath: source,
@@ -928,125 +618,6 @@ test("beforeSourceCleanup 在源文件隔离前阻断清理", async (t) => {
   }
 });
 
-test("cleanupVerifiedSource 删除前的最终核验会拦住竞态变化", async (t) => {
-  await t.test("目标被同大小同修改时间的另一文件替换时绝不删除 cleanup", async () => {
-    await withTempFolder(async (folder) => {
-      const source = path.join(folder, "source.mp4");
-      const cleanupPath = Transaction.cleanupPathFor(source, "recovery-target-replaced");
-      await fs.writeFile(source, "original");
-      const sourceFingerprint = Transaction.fingerprintFromStat(await fs.lstat(source));
-      const evidence = await createCleanupEvidence(folder, "source.mp4", "original");
-      const replacementPath = evidence.targetPath + ".replacement";
-      let targetReplaced = false;
-      let originalDeleteCalls = 0;
-      const racingFs = {
-        ...fs,
-        async lstat(nativePath) {
-          const stat = await fs.lstat(nativePath);
-          if (targetReplaced && nativePath === evidence.targetPath) {
-            stat.mtimeMs = evidence.targetFingerprint.mtimeMs;
-            stat.ctimeMs = (Number(evidence.targetFingerprint.ctimeMs) || 1) + 1;
-            stat.ino = (Number(evidence.targetFingerprint.ino) || 1) + 1;
-          }
-          return stat;
-        },
-        async unlink(nativePath) {
-          if (nativePath === source || nativePath === cleanupPath) originalDeleteCalls += 1;
-          return fs.unlink(nativePath);
-        },
-      };
-
-      const result = await Transaction.cleanupVerifiedSource({
-        id: "recovery-target-replaced",
-        fs: racingFs,
-        sourcePath: source,
-        cleanupPath,
-        sourceFingerprint,
-        ...evidence,
-        validate: async () => true,
-        wait: async () => {},
-        cleanupWait: async () => {},
-        beforeDelete: async () => {
-          await fs.writeFile(replacementPath, Buffer.alloc(evidence.targetFingerprint.size, 0x78));
-          await fs.utimes(
-            replacementPath,
-            new Date(evidence.targetFingerprint.mtimeMs),
-            new Date(evidence.targetFingerprint.mtimeMs),
-          );
-          await fs.unlink(evidence.targetPath);
-          await fs.rename(replacementPath, evidence.targetPath);
-          targetReplaced = true;
-          const replacementFingerprint = Transaction.fingerprintFromStat(await racingFs.lstat(evidence.targetPath));
-          assert.equal(Transaction.samePortableFingerprint(evidence.targetFingerprint, replacementFingerprint), true);
-          assert.equal(Transaction.sameFingerprint(evidence.targetFingerprint, replacementFingerprint), false);
-          return true;
-        },
-      });
-
-      assert.equal(targetReplaced, true);
-      assert.equal(originalDeleteCalls, 0);
-      assert.equal(result.cleanupPending, true);
-      assert.equal(result.remainingSourcePath, cleanupPath);
-      assert.equal(await Transaction.exists(fs, source), false);
-      assert.equal(await fs.readFile(cleanupPath, "utf8"), "original");
-    });
-  });
-
-  for (const scenario of [
-    {
-      name: "Premiere 素材被改回源路径时绝不删除 cleanup",
-      mutate(item, sourcePath) { item.setMediaPath(sourcePath); },
-    },
-    {
-      name: "Premiere 素材变为离线时绝不删除 cleanup",
-      mutate(item) { item.setOffline(true); },
-    },
-  ]) {
-    await t.test(scenario.name, async () => {
-      await withTempFolder(async (folder) => {
-        const source = path.join(folder, "source.mp4");
-        const transactionId = scenario.name.includes("离线") ? "recovery-link-offline" : "recovery-link-source";
-        const cleanupPath = Transaction.cleanupPathFor(source, transactionId);
-        await fs.writeFile(source, "original");
-        const sourceFingerprint = Transaction.fingerprintFromStat(await fs.lstat(source));
-        const evidence = await createCleanupEvidence(folder, "source.mp4", "original");
-        const item = evidence.projectItems[0];
-        let originalDeleteCalls = 0;
-        const trackingFs = {
-          ...fs,
-          async unlink(nativePath) {
-            if (nativePath === source || nativePath === cleanupPath) originalDeleteCalls += 1;
-            return fs.unlink(nativePath);
-          },
-        };
-
-        const result = await Transaction.cleanupVerifiedSource({
-          id: transactionId,
-          fs: trackingFs,
-          sourcePath: source,
-          cleanupPath,
-          sourceFingerprint,
-          ...evidence,
-          validate: async () => true,
-          wait: async () => {},
-          cleanupWait: async () => {},
-          beforeDelete: async () => {
-            scenario.mutate(item, source);
-            return true;
-          },
-        });
-
-        assert.equal(originalDeleteCalls, 0);
-        assert.equal(result.cleanupPending, true);
-        assert.equal(result.remainingSourcePath, cleanupPath);
-        assert.equal(await Transaction.exists(fs, source), false);
-        assert.equal(await fs.readFile(cleanupPath, "utf8"), "original");
-        assert.equal(await fs.readFile(evidence.targetPath, "utf8"), "original");
-      });
-    });
-  }
-});
-
 test("同卷硬链接在工程保存失败时保留两条路径及 Premiere 新链接", async () => {
   await withTempFolder(async (folder) => {
     const source = path.join(folder, "source.mp4");
@@ -1057,6 +628,7 @@ test("同卷硬链接在工程保存失败时保留两条路径及 Premiere 新�
     let saves = 0;
     await assert.rejects(
       Transaction.moveAndRelink({
+      recycle: await fakeRecycle(folder),
         fs,
         sourcePath: source,
         targetPath: target,
@@ -1104,6 +676,7 @@ test("同卷硬链接清理时刷新目标检查点并正常删除源文件", as
     };
 
     const result = await Transaction.moveAndRelink({
+      recycle: await fakeRecycle(folder),
       fs: trackingFs,
       sourcePath: source,
       targetPath: target,
@@ -1175,6 +748,7 @@ test("源文件缺少可靠身份时在同盘和跨盘模式都保持原位且�
     };
 
     await assert.rejects(Transaction.moveAndRelink({
+      recycle: await fakeRecycle(folder),
       fs: identityBlindFs,
       sourcePath: source,
       targetPath: target,
@@ -1228,6 +802,7 @@ test("目标占位缺少可靠身份时不覆盖源文件且不删除占位", as
     };
 
     await assert.rejects(Transaction.moveAndRelink({
+      recycle: await fakeRecycle(folder),
       fs: targetIdentityBlindFs,
       sourcePath: source,
       targetPath: target,
@@ -1288,6 +863,7 @@ test("硬链接建立后身份证据缺失时保留两处文件且不进入回�
     };
 
     await assert.rejects(Transaction.moveAndRelink({
+      recycle: await fakeRecycle(folder),
       fs: targetIdentityBlindFs,
       sourcePath: source,
       targetPath: target,
@@ -1326,6 +902,7 @@ test("恢复清理会用强硬链接身份跨过合法 ctime 变化并返回删�
     const item = fakeProjectItem(target);
 
     const result = await Transaction.cleanupVerifiedSource({
+      recycle: await fakeRecycle(folder),
       id: "hard-link-recovery",
       fs,
       sourcePath: source,
@@ -1419,6 +996,7 @@ test("硬链接排他创建的目标竞态不会覆盖竞争者", async () => {
       },
     };
     await assert.rejects(Transaction.moveAndRelink({
+      recycle: await fakeRecycle(folder),
       fs: racingFs,
       sourcePath: source,
       targetPath: target,
@@ -1463,6 +1041,7 @@ for (const mode of ["rename", "copy"]) {
       };
 
       await assert.rejects(Transaction.moveAndRelink({
+      recycle: await fakeRecycle(folder),
         fs: claimingFs,
         sourcePath: source,
         targetPath: target,
@@ -1505,6 +1084,7 @@ test("同卷移动在硬链接不可用时使用原生重命名而不复制", { 
     };
 
     const result = await Transaction.moveAndRelink({
+      recycle: await fakeRecycle(folder),
       fs: fallbackFs,
       sourcePath: source,
       targetPath: target,
@@ -1561,6 +1141,7 @@ test("原生重命名支持 UXP 数字文件描述符和零值成功码", { skip
     };
 
     const result = await Transaction.moveAndRelink({
+      recycle: await fakeRecycle(folder),
       fs: uxpFs,
       sourcePath: source,
       targetPath: target,
@@ -1596,6 +1177,7 @@ test("原生重命名失败时只移除自己创建的空目标占位", { skip: 
 
     await assert.rejects(
       Transaction.moveAndRelink({
+      recycle: await fakeRecycle(folder),
         fs: failingFs,
         sourcePath: source,
         targetPath: target,
@@ -1637,6 +1219,7 @@ test("Premiere 保存失败时，原生同卷重命名会保留新路径", { ski
 
     await assert.rejects(
       Transaction.moveAndRelink({
+      recycle: await fakeRecycle(folder),
         fs: uxpLikeFs,
         sourcePath: source,
         targetPath: target,
@@ -1679,6 +1262,7 @@ test("原生同卷重命名只会在 Premiere 开始重链接前移回源路径"
     };
 
     await assert.rejects(Transaction.moveAndRelink({
+      recycle: await fakeRecycle(folder),
       fs: uxpLikeFs,
       sourcePath: source,
       targetPath: target,
@@ -1711,6 +1295,7 @@ test("原生回滚绝不会把 Premiere 重链接到旧路径上的替换文件"
 
     try {
       await Transaction.moveAndRelink({
+      recycle: await fakeRecycle(folder),
         fs: { ...fs, link: undefined },
         sourcePath: source,
         targetPath: target,
@@ -1750,6 +1335,7 @@ test("复制回滚绝不会把 Premiere 重链接到旧路径上的替换文件"
 
     try {
       await Transaction.moveAndRelink({
+      recycle: await fakeRecycle(folder),
         fs,
         sourcePath: source,
         targetPath: target,
@@ -1841,6 +1427,7 @@ test("检查后源文件立即被替换时，复制回滚会保留目标", async
     let thrown;
     try {
       await Transaction.moveAndRelink({
+      recycle: await fakeRecycle(folder),
         fs: racingFs,
         sourcePath: source,
         targetPath: target,
@@ -1885,6 +1472,7 @@ test("跨卷 UXP 路径只复制一次内容，然后移除源文件", { skip: "
     };
 
     const result = await Transaction.moveAndRelink({
+      recycle: await fakeRecycle(folder),
       fs: uxpLikeFs,
       sourcePath: source,
       targetPath: target,
@@ -1973,6 +1561,7 @@ test("复制成功后返回实际目标指纹，可移植比较会忽略身份�
     await fs.mkdir(path.dirname(target), { recursive: true });
     await fs.writeFile(source, "video");
     const result = await Transaction.moveAndRelink({
+      recycle: await fakeRecycle(folder),
       fs,
       sourcePath: source,
       targetPath: target,
@@ -2000,45 +1589,6 @@ test("复制成功后返回实际目标指纹，可移植比较会忽略身份�
   });
 });
 
-test("跨卷清理绝不会删除在稳定等待期间持续变化的隔离内容", async () => {
-  await withTempFolder(async (folder) => {
-    const source = path.join(folder, "source.mp4");
-    const target = path.join(folder, "batch", "source.mp4");
-    const transactionId = "tx-changing-quarantine";
-    const cleanupPath = Transaction.cleanupPathFor(source, transactionId);
-    await fs.mkdir(path.dirname(target), { recursive: true });
-    await fs.writeFile(source, "original");
-    let cleanupWaitCalls = 0;
-    let cleanupWaitMilliseconds = [];
-    const result = await Transaction.moveAndRelink({
-      id: transactionId,
-      fs,
-      sourcePath: source,
-      targetPath: target,
-      cleanupPath,
-      projectItems: [fakeProjectItem(source)],
-      forceMode: "copy",
-      validate: async () => true,
-      persistProject: async () => true,
-      wait: async () => {},
-      cleanupWait: async (milliseconds) => {
-        cleanupWaitCalls += 1;
-        cleanupWaitMilliseconds.push(milliseconds);
-        if (await Transaction.exists(fs, cleanupPath)) await fs.appendFile(cleanupPath, "-continued");
-      },
-    });
-
-    assert.equal(cleanupWaitCalls, 1);
-    assert.deepEqual(cleanupWaitMilliseconds, [Transaction.cleanupSettlingMs]);
-    assert.ok(Transaction.cleanupSettlingMs > 140);
-    assert.equal(result.cleanupPending, true);
-    assert.match(result.cleanupWarning, /稳定复核期间发生变化/);
-    assert.equal(await Transaction.exists(fs, source), false);
-    assert.equal(await fs.readFile(cleanupPath, "utf8"), "original-continued");
-    assert.equal(await fs.readFile(target, "utf8"), "original");
-  });
-});
-
 test("目标创建后的身份校验失败时会保留目标以供人工审核", async () => {
   await withTempFolder(async (folder) => {
     const source = path.join(folder, "source.mp4");
@@ -2061,6 +1611,7 @@ test("目标创建后的身份校验失败时会保留目标以供人工审核",
 
     await assert.rejects(
       Transaction.moveAndRelink({
+      recycle: await fakeRecycle(folder),
         fs: mismatchingFs,
         sourcePath: source,
         targetPath: target,
@@ -2105,6 +1656,7 @@ test("复制后暂存路径被替换时，回滚绝不会删除该路径", { ski
 
     await assert.rejects(
       Transaction.moveAndRelink({
+      recycle: await fakeRecycle(folder),
         fs: replacingFs,
         sourcePath: source,
         targetPath: target,
@@ -2152,6 +1704,7 @@ test("目标重命名后暂存路径被重新创建时，复制模式绝不会�
     };
 
     await assert.rejects(Transaction.moveAndRelink({
+      recycle: await fakeRecycle(folder),
       fs: racingFs,
       sourcePath: source,
       targetPath: target,
@@ -2179,6 +1732,7 @@ test("绝不会覆盖现有目标", async () => {
     await fs.writeFile(target, "existing");
     const item = fakeProjectItem(source);
     await assert.rejects(Transaction.moveAndRelink({
+      recycle: await fakeRecycle(folder),
       fs,
       sourcePath: source,
       targetPath: target,
@@ -2204,6 +1758,7 @@ test("事务边界会拒绝源路径或目标路径中的 .prproj 文件", async
 
     for (const [sourcePath, targetPath] of [[projectSource, mediaTarget], [mediaSource, projectTarget]]) {
       await assert.rejects(Transaction.moveAndRelink({
+      recycle: await fakeRecycle(folder),
         fs,
         sourcePath,
         targetPath,
@@ -2230,6 +1785,7 @@ test("跨卷保存后上下文发生变化时会保留两条路径，而不删�
     const item = fakeProjectItem(source);
     let validations = 0;
     const result = await Transaction.moveAndRelink({
+      recycle: await fakeRecycle(folder),
       fs,
       sourcePath: source,
       targetPath: target,
@@ -2250,107 +1806,6 @@ test("跨卷保存后上下文发生变化时会保留两条路径，而不删�
   });
 });
 
-test("清理重命名后上下文发生变化时会保留隔离的源文件", async () => {
-  await withTempFolder(async (folder) => {
-    const source = path.join(folder, "source.mp4");
-    const target = path.join(folder, "batch", "source.mp4");
-    const transactionId = "tx-context-after-rename";
-    const cleanupPath = Transaction.cleanupPathFor(source, transactionId);
-    await fs.mkdir(path.dirname(target), { recursive: true });
-    await fs.writeFile(source, "video");
-    const item = fakeProjectItem(source);
-    let validations = 0;
-    const result = await Transaction.moveAndRelink({
-      id: transactionId,
-      fs,
-      sourcePath: source,
-      targetPath: target,
-      cleanupPath,
-      projectItems: [item],
-      forceMode: "copy",
-      validate: async () => {
-        validations += 1;
-        return validations < 10;
-      },
-      persistProject: async () => true,
-      wait: async () => {},
-    });
-
-    assert.equal(result.cleanupPending, true);
-    assert.equal(await Transaction.exists(fs, source), false);
-    assert.equal(await fs.readFile(cleanupPath, "utf8"), "video");
-    assert.equal(await fs.readFile(target, "utf8"), "video");
-    assert.equal(item.currentPath(), target);
-  });
-});
-
-test("跨卷清理期间绝不会删除已被替换的源路径", async () => {
-  await withTempFolder(async (folder) => {
-    const source = path.join(folder, "source.mp4");
-    const target = path.join(folder, "batch", "source.mp4");
-    await fs.mkdir(path.dirname(target), { recursive: true });
-    await fs.writeFile(source, "original");
-    const item = fakeProjectItem(source);
-    const result = await Transaction.moveAndRelink({
-      fs,
-      sourcePath: source,
-      targetPath: target,
-      projectItems: [item],
-      forceMode: "copy",
-      validate: async () => true,
-      persistProject: async () => {
-        await fs.writeFile(source, "replacement-file");
-        return true;
-      },
-      wait: async () => {},
-    });
-
-    assert.equal(result.cleanupPending, false);
-    assert.equal(result.sourceChanged, true);
-    assert.equal(await fs.readFile(source, "utf8"), "replacement-file");
-    assert.equal(await fs.readFile(target, "utf8"), "original");
-    assert.equal(item.currentPath(), target);
-  });
-});
-
-test("待删除隔离文件被抢占时，不删除竞争文件并保留 cleanup-pending", async () => {
-  await withTempFolder(async (folder) => {
-    const source = path.join(folder, "source.mp4");
-    const target = path.join(folder, "batch", "source.mp4");
-    const transactionId = "tx-cleanup-occupy";
-    const cleanupPath = Transaction.cleanupPathFor(source, transactionId);
-    await fs.mkdir(path.dirname(target), { recursive: true });
-    await fs.writeFile(source, "original");
-    const item = fakeProjectItem(source);
-    let beforeDeleteCalls = 0;
-    const result = await Transaction.moveAndRelink({
-      id: transactionId,
-      fs,
-      sourcePath: source,
-      targetPath: target,
-      cleanupPath,
-      projectItems: [item],
-      forceMode: "copy",
-      validate: async () => true,
-      persistProject: async () => true,
-      wait: async () => {},
-      beforeDelete: async ({ cleanupPath: occupiedPath }) => {
-        beforeDeleteCalls += 1;
-        await nativeFs.unlink(occupiedPath);
-        await nativeFs.writeFile(occupiedPath, "another-process-file");
-        return true;
-      },
-    });
-
-    assert.equal(beforeDeleteCalls, 1);
-    assert.equal(result.cleanupPending, true);
-    assert.equal(result.remainingSourcePath, cleanupPath);
-    assert.equal(await fs.readFile(cleanupPath, "utf8"), "another-process-file");
-    assert.equal(await Transaction.exists(fs, source), false);
-    assert.equal(await fs.readFile(target, "utf8"), "original");
-  });
-});
-
 test("硬链接不支持且异常没有错误码时，会降级为排他复制并完成清理", async () => {
   await withTempFolder(async (folder) => {
     const source = path.join(folder, "source.mov");
@@ -2363,6 +1818,7 @@ test("硬链接不支持且异常没有错误码时，会降级为排他复制�
     });
 
     const result = await Transaction.moveAndRelink({
+      recycle: await fakeRecycle(folder),
       fs: fallbackFs,
       sourcePath: source,
       targetPath: target,
@@ -2381,51 +1837,7 @@ test("硬链接不支持且异常没有错误码时，会降级为排他复制�
   });
 });
 
-test("身份检查与清理重命名之间源文件被替换时会恢复该文件，而不删除", async () => {
-  await withTempFolder(async (folder) => {
-    const source = path.join(folder, "source.mp4");
-    const target = path.join(folder, "batch", "source.mp4");
-    const transactionId = "tx-race";
-    const cleanupPath = Transaction.cleanupPathFor(source, transactionId);
-    await fs.mkdir(path.dirname(target), { recursive: true });
-    await fs.writeFile(source, "original");
-    const item = fakeProjectItem(source);
-    let replaced = false;
-    const replacingFs = {
-      ...fs,
-      rename: async (nativePath, nextPath) => {
-        if (!replaced && nativePath === source && nextPath === cleanupPath) {
-          replaced = true;
-          await fs.unlink(source);
-          await fs.writeFile(source, "replacement-file");
-        }
-        return fs.rename(nativePath, nextPath);
-      },
-    };
-
-    const result = await Transaction.moveAndRelink({
-      id: transactionId,
-      fs: replacingFs,
-      sourcePath: source,
-      targetPath: target,
-      cleanupPath,
-      projectItems: [item],
-      forceMode: "copy",
-      validate: async () => true,
-      persistProject: async () => true,
-      wait: async () => {},
-    });
-
-    assert.equal(result.cleanupPending, false);
-    assert.equal(result.sourceChanged, true);
-    assert.equal(await fs.readFile(source, "utf8"), "replacement-file");
-    assert.equal(await Transaction.exists(fs, cleanupPath), false);
-    assert.equal(await fs.readFile(target, "utf8"), "original");
-    assert.equal(item.currentPath(), target);
-  });
-});
-
-test("跨卷清理前源文件已被移除时，事务可正常完成", async () => {
+test("跨卷清理前源文件消失但没有回收凭据时不能报告完成", async () => {
   await withTempFolder(async (folder) => {
     const source = path.join(folder, "source.mp4");
     const target = path.join(folder, "batch", "source.mp4");
@@ -2433,6 +1845,7 @@ test("跨卷清理前源文件已被移除时，事务可正常完成", async ()
     await fs.writeFile(source, "video");
     const item = fakeProjectItem(source);
     const result = await Transaction.moveAndRelink({
+      recycle: await fakeRecycle(folder),
       fs,
       sourcePath: source,
       targetPath: target,
@@ -2440,16 +1853,60 @@ test("跨卷清理前源文件已被移除时，事务可正常完成", async ()
       forceMode: "copy",
       validate: async () => true,
       persistProject: async () => {
-        await fs.unlink(source);
+        await fs.rename(source, path.join(folder, "externally-moved.mp4"));
         return true;
       },
       wait: async () => {},
     });
 
-    assert.equal(result.cleanupPending, false);
+    assert.equal(result.cleanupPending, true);
     assert.equal(result.sourceChanged, false);
     assert.equal(await Transaction.exists(fs, source), false);
     assert.equal(await fs.readFile(target, "utf8"), "video");
     assert.equal(item.currentPath(), target);
   });
+});
+test("宿主整数丢精度时使用原生字符串身份，并拒绝核对期间变化", async () => {
+  const base = { size: 4, mtimeMs: 100.2, birthtimeMs: 90, dev: 42, ino: 30680772461756344, isFile: () => true };
+  const fs = { lstat: async () => base, materialIdentity: async () => ({ size: 4, mtimeMs: 100, birthtimeMs: 90, dev: "42", ino: "30680772461756346" }) };
+  const api = require("../src/transaction");
+  assert.equal((await api.lstatForIdentity(fs, "E:\\test.png")).ino, "30680772461756346");
+  fs.materialIdentity = async () => ({ size: 5, mtimeMs: 100, birthtimeMs: 90, dev: "42", ino: "30680772461756346" });
+  await assert.rejects(api.lstatForIdentity(fs, "E:\\test.png"), /发生变化/);
+});
+
+test("精确身份快照不继承原生 Stat，类型方法和属性始终使用原接收对象", async () => {
+  const owners = new WeakSet();
+  const values = { size: 4, mtimeMs: 100.2, ctimeMs: 99.5, birthtimeMs: 90, dev: 42, ino: 30680772461756344 };
+  const nativeStat = {};
+  owners.add(nativeStat);
+  for (const [key, value] of Object.entries(values)) Object.defineProperty(nativeStat, key, {
+    get() { assert.ok(owners.has(this), `原生属性 ${key} 的接收对象错误`); return value; },
+  });
+  for (const [key, value] of Object.entries({ isFile: true, isDirectory: false, isSymbolicLink: false })) {
+    nativeStat[key] = function () { assert.ok(owners.has(this), `原生方法 ${key} 的接收对象错误`); return value; };
+  }
+  const hostFs = { lstat: async () => nativeStat, materialIdentity: async () => ({ ...values, mtimeMs: 100, dev: "42", ino: "30680772461756346" }) };
+  const exact = await Transaction.lstatForIdentity(hostFs, "E:\\test.png");
+  assert.equal(Object.getPrototypeOf(exact), Object.prototype);
+  assert.equal(exact.isFile(), true);
+  assert.equal(exact.isDirectory(), false);
+  assert.equal(exact.isSymbolicLink(), false);
+  assert.equal(exact.ctimeMs, 99.5);
+  assert.equal(exact.ino, "30680772461756346");
+  assert.equal(nativeStat.ino, values.ino);
+});
+
+test("明确标记 UXP 的文件接口只用单参数 lstat，不尝试 Node bigint 选项", async () => {
+  const stat = { size: 4, mtimeMs: 100, dev: 42, ino: 12, isFile: () => true };
+  const hostFs = { lstatSupportsBigInt: false, async lstat(...args) { assert.equal(args.length, 1); return stat; } };
+  assert.equal(await Transaction.lstatForIdentity(hostFs, "E:\\test.png"), stat);
+});
+
+test("精确身份返回前原路径变成非普通文件时拒绝快照", async () => {
+  const values = { size: 4, mtimeMs: 100, birthtimeMs: 90, dev: 42, ino: 30680772461756344 };
+  let calls = 0;
+  const hostFs = { lstat: async () => { const isFile = ++calls === 1; return { ...values, isFile: () => isFile }; },
+    materialIdentity: async () => ({ ...values, dev: "42", ino: "30680772461756346" }) };
+  await assert.rejects(Transaction.lstatForIdentity(hostFs, "E:\\test.png"), /发生变化/);
 });

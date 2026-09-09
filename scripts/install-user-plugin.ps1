@@ -115,9 +115,12 @@ if ($sourceInventory.Count -eq 0 -or $stageDiff.Count -ne 0) {
 
 $previousInstall = Test-Path -LiteralPath $targetPath -PathType Container
 $previousInstallMoved = $false
+$previousServiceStopped = $false
 $newInstallMoved = $false
 try {
   if ($previousInstall) {
+    & (Join-Path $PSScriptRoot 'manage-material-service.ps1') -PluginPath $targetPath -Action Stop
+    $previousServiceStopped = $true
     Move-Item -LiteralPath $targetPath -Destination $backupPath
     $previousInstallMoved = $true
   }
@@ -129,11 +132,16 @@ try {
   if ($installDiff.Count -ne 0) {
     throw "已安装插件未通过 SHA-256 校验。"
   }
+  if (Test-Path -LiteralPath (Join-Path $targetPath 'native\windows\MaterialFileHelper.exe')) {
+    & (Join-Path $PSScriptRoot 'configure-material-bridge.ps1') -PluginPath $targetPath
+  }
 } catch {
   $installError = $_
   $recoveryErrors = @()
   if ($newInstallMoved -and (Test-Path -LiteralPath $targetPath)) {
     try {
+      & (Join-Path $PSScriptRoot 'manage-material-service.ps1') -PluginPath $targetPath -Action Stop
+      & (Join-Path $PSScriptRoot 'manage-material-service.ps1') -PluginPath $targetPath -Action Unregister
       Move-Item -LiteralPath $targetPath -Destination $failedPath
     } catch {
       $recoveryErrors += "无法保留失败的新版本：$($_.Exception.Message)"
@@ -142,11 +150,21 @@ try {
   if ($previousInstallMoved -and (Test-Path -LiteralPath $backupPath) -and -not (Test-Path -LiteralPath $targetPath)) {
     try {
       Move-Item -LiteralPath $backupPath -Destination $targetPath
+      if (Test-Path -LiteralPath (Join-Path $targetPath 'native\windows\MaterialFileHelper.exe')) {
+        $oldVersion = [version]((Get-Content -Raw -LiteralPath (Join-Path $targetPath 'manifest.json') | ConvertFrom-Json).version)
+        if ($oldVersion -ge [version]'0.2.6') { & (Join-Path $PSScriptRoot 'manage-material-service.ps1') -PluginPath $targetPath -Action Start }
+      }
     } catch {
       $recoveryErrors += "无法自动恢复旧版；旧版仍位于 $backupPath：$($_.Exception.Message)"
     }
   } elseif ($previousInstallMoved -and (Test-Path -LiteralPath $backupPath) -and (Test-Path -LiteralPath $targetPath)) {
     $recoveryErrors += "安装目标被占用，旧版仍位于：$backupPath"
+  } elseif ($previousServiceStopped -and -not $previousInstallMoved -and (Test-Path -LiteralPath $targetPath)) {
+    try {
+      if ([version]$existingManifest.version -ge [version]'0.2.6') {
+        & (Join-Path $PSScriptRoot 'manage-material-service.ps1') -PluginPath $targetPath -Action Start
+      }
+    } catch { $recoveryErrors += "旧插件保留，但助手恢复失败：$($_.Exception.Message)" }
   }
   if ($recoveryErrors.Count -gt 0) {
     throw "安装失败：$($installError.Exception.Message)；恢复提示：$($recoveryErrors -join '；')"

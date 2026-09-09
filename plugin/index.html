@@ -8,11 +8,18 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body data-state="setup" data-onboarding="protection" data-recovery="false">
+  <section class="confirmation-page" id="confirmationPage" role="alertdialog" aria-modal="true" aria-labelledby="confirmationHeading" hidden>
+    <h2 id="confirmationHeading">确认本次操作</h2>
+    <p id="confirmationText"></p>
+    <button class="button button-primary" id="confirmationAccept" type="button">确认继续</button>
+    <button class="button button-secondary" id="confirmationCancel" type="button">取消，保持原状</button>
+  </section>
   <main class="panel" id="panelRoot">
     <header class="topbar">
       <div class="brand-lockup">
         <div class="brand-copy">
           <h1>素材自动整理</h1>
+          <p id="pluginVersion">版本 0.2.10 · 测试版</p>
           <p>只整理当前工程引用的外部素材</p>
         </div>
       </div>
@@ -65,8 +72,13 @@
         <button class="button button-secondary recovery-open" id="openRecoverySourceButton" type="button">打开原素材位置</button>
         <button class="button button-secondary recovery-open" id="openRecoveryTargetButton" type="button">打开新位置</button>
       </div>
-      <button class="button button-quiet recovery-close" id="closeRecoveryRecordButton" type="button" hidden>保留现状并关闭记录</button>
+      <button class="button button-quiet recovery-close" id="closeRecoveryRecordButton" type="button" hidden>暂缓此素材，保留记录</button>
+      <button class="button button-primary" id="verifyRecoveryButton" type="button" hidden>核验并继续整理</button>
+      <button class="button button-secondary" id="cancelRecoveryButton" type="button" hidden>取消核验</button>
+      <button class="button button-quiet" id="deferRecoveryButton" type="button" hidden>暂缓此素材，处理其他素材</button>
     </section>
+
+    <p class="background-status" id="backgroundStatus" role="status" aria-live="polite" hidden></p>
 
     <section class="review-section" id="reviewSection" aria-labelledby="reviewHeading" hidden>
       <div class="review-heading">
@@ -79,10 +91,10 @@
 
     <section class="batch-section" id="batchSection" aria-labelledby="batchHeading">
       <div class="destination-heading">
-        <h2 id="batchHeading">当前交接文件夹</h2>
+        <h2 id="batchHeading">当前素材文件夹</h2>
         <span class="batch-status" id="batchStatus">自动整理中</span>
       </div>
-      <div class="destination-path" title="当前交接文件夹">
+      <div class="destination-path" title="当前素材文件夹">
         <span>磁盘位置</span>
         <code id="batchPath">素材\2026年09月04日添加素材</code>
       </div>
@@ -97,9 +109,9 @@
         <span>打开当前文件夹</span>
       </button>
       <button class="button button-secondary" id="handoffButton" type="button">
-        <span>完成这次交接</span>
+        <span>开始新一批</span>
       </button>
-      <p id="handoffHint">完成后，之后识别到的素材会进入下一个文件夹。</p>
+      <p id="handoffHint">每天自动分批；同一天需要分开时，可开始新一批。</p>
       <p class="folder-action-message" id="folderActionMessage" role="status" aria-live="polite" hidden></p>
     </section>
 
@@ -131,7 +143,7 @@
       </div>
 
       <h2 class="settings-page-title" id="settingsHeading">管理不搬动文件夹</h2>
-      <p class="settings-intro"><strong>名单里的素材不会移动</strong><span>只有名单外、工程文件夹外的普通素材才会搬到当前交接文件夹。添加、更换或移除后，同一工程文件夹内的所有 Premiere 工程都会暂停，磁盘文件不会被删除。</span></p>
+      <p class="settings-intro"><strong>名单里的素材不会移动</strong><span>只有名单外、工程文件夹外的普通素材才会搬到当前素材文件夹。添加、更换或移除后，同一工程文件夹内的所有 Premiere 工程都会暂停，磁盘文件不会被删除。</span></p>
 
       <div class="settings-message" id="settingsMessage" role="status" aria-live="polite" aria-atomic="true" hidden></div>
 
@@ -183,14 +195,14 @@
           <span id="settingsWorkspaceLabel">当前工程文件夹</span>
           <strong id="settingsWorkspaceName">城市纪录片</strong>
           <code id="settingsWorkspacePath">D:\剪辑项目</code>
-          <p>同一文件夹里的所有 Premiere 工程共用这份名单。名单改变后，每个工程都要先确认新名单，再单独点击“开始整理此工程”。</p>
+          <p>同一文件夹里的所有 Premiere 工程共用这份名单。名单改变后暂停整理；确认一次新名单后，同目录工程共用设置。</p>
         </section>
       </section>
 
       <section class="settings-rules" aria-labelledby="settingsRulesHeading">
         <h3 id="settingsRulesHeading">整理规则</h3>
         <p>当前工程文件夹内的全部素材保持原位；只有工程文件夹外的普通素材会整理。</p>
-        <p>整理后，原位置不保留文件。插件确认 Premiere 已重新链接并保存后，才会删除跨盘源文件。</p>
+        <p>整理后，原位置不保留文件。确认 Premiere 链接可用并保存后，原文件放入系统回收站；回收失败则保留原位。</p>
       </section>
     </div>
   </section>
@@ -201,7 +213,7 @@
         setup: { title: '先设置不搬动文件夹', desc: '后期包、共享音效库等要保持原位的文件夹，请先加入名单。没有也可以直接继续。', status: '尚未设置', files: '0', size: '0 B', progress: 0, kind: 'onboarding', action: '设置不搬动文件夹', intent: 'settings', icon: 'shield', auto: false, onboarding: 'protection', project: '城市纪录片_EP03.prproj', meta: '工程路径已识别', path: 'D:\\剪辑项目\\城市纪录片_EP03.prproj', activity: [] },
         activate: { title: '当前工程尚未开启', desc: '工程内素材保持原位；工程外 2 个 · 5.00 GB 待整理。', status: '等待开启', files: '0', size: '0 B', progress: 0, kind: 'onboarding', action: '开始整理此工程', intent: 'auto', icon: 'check', auto: false, onboarding: 'auto', project: '城市纪录片_EP03.prproj', meta: '工程路径已识别', path: 'D:\\剪辑项目\\城市纪录片_EP03.prproj', activity: [['只完成了检查', '尚未移动、补链或保存工程']] },
         policy: { title: '此工程需要重新确认', desc: '工程内素材保持原位；工程外 1 个 · 5.40 GB 待整理。', status: '等待确认', files: '0', size: '0 B', progress: 0, kind: 'onboarding', action: '开始整理此工程', intent: 'policy', icon: 'check', auto: false, project: '城市纪录片_EP03.prproj', meta: '工程路径已识别', path: 'D:\\剪辑项目\\城市纪录片_EP03.prproj', activity: [['整理规则已经更新', '确认前不会移动、补链或保存工程'], ['不搬动名单已核对', '开始后才会整理工程外素材']] },
-        ready: { title: '此工程的自动整理已开启', desc: '工程文件夹内的素材保持原位；以后新增的工程外普通素材会进入当前交接文件夹。', status: '自动整理中', files: '12', size: '18.6 GB', progress: 0, kind: 'ready', action: '', intent: '', icon: 'check', auto: true, project: '城市纪录片_EP03.prproj', meta: '工程路径已识别', path: 'D:\\剪辑项目\\城市纪录片_EP03.prproj', activity: [['已连接当前工程', '刚刚 · 此工程已开启'], ['等待工程外素材', '工程文件夹内的素材保持原位']] },
+        ready: { title: '此工程的自动整理已开启', desc: '工程文件夹内的素材保持原位；以后新增的工程外普通素材会进入当前素材文件夹。', status: '自动整理中', files: '12', size: '18.6 GB', progress: 0, kind: 'ready', action: '', intent: '', icon: 'check', auto: true, project: '城市纪录片_EP03.prproj', meta: '工程路径已识别', path: 'D:\\剪辑项目\\城市纪录片_EP03.prproj', activity: [['已连接当前工程', '刚刚 · 此工程已开启'], ['等待工程外素材', '工程文件夹内的素材保持原位']] },
         empty: { title: '请先打开 Premiere 工程', desc: '打开工程后，插件才能找到需要整理的素材。', status: '等待工程', files: '0', size: '0 B', progress: 0, kind: 'empty', action: '重新检查', intent: 'refresh', icon: 'folder', auto: false, project: '未打开工程', meta: '等待连接', path: '', activity: [['等待 Premiere 工程', '打开工程后再重新检查']] },
         unsaved: { title: '请先保存工程', desc: '保存后，插件才能在工程旁边建立素材文件夹。', status: '等待保存', files: '0', size: '0 B', progress: 0, kind: 'warning', action: '重新检查', intent: 'refresh', icon: 'alert', auto: false, project: '城市纪录片_EP03', meta: '尚未保存', path: '', activity: [['工程尚未保存', '保存后再重新检查']] },
         running: { title: '正在检查工程素材', desc: '正在识别工程里引用的外部文件。', status: '检查中', files: '12', size: '18.6 GB', progress: 46, kind: 'running', action: '', intent: '', icon: 'refresh', auto: true, project: '城市纪录片_EP03.prproj', meta: '工程路径已识别', path: 'D:\\剪辑项目\\城市纪录片_EP03.prproj', activity: [['正在检查工程素材', '已检查 12 个文件'], ['共享素材保持原位', '后期包等文件夹不会移动']] },
@@ -296,8 +308,9 @@
             sourceStatus: '存在 · 5.40 GB',
             targetStatus: '存在 · 5.40 GB',
             linkStatus: '仍在原位置',
-            confirmation: '旧记录缺少可验证的新位置身份，插件不会自行猜测。两处同尺寸文件都已保留；如果你决定自行处理，可以关闭这条旧记录。',
+            confirmation: '旧记录缺少完整核验凭据，两处文件都已保留。可核验全部内容后继续，或暂缓此素材并保留记录。',
             canClose: true,
+            canVerify: true,
           },
           activity: [['只读核对已完成', '没有移动、删除、补链或保存工程']],
         },
@@ -328,6 +341,12 @@
           activity: [['素材链接已经更新', '等待 Premiere 工程确认保存'], ['自动整理已暂停', '检查完成前不会继续移动素材']],
         }
       };
+      stateData.background = Object.assign({}, stateData.ready, {
+        background: '1 项等待原件释放：AB7A0D8CACE0299E3762506A74AA612B.gif',
+      });
+      stateData['background-paused'] = Object.assign({}, stateData.paused, {
+        background: '1 项等待继续整理：AB7A0D8CACE0299E3762506A74AA612B.gif',
+      });
       const qs = (id) => document.getElementById(id);
       const settingsPreviewMarkup = {
         empty: '<div class="protected-empty" role="listitem"><strong>还没有添加文件夹</strong><span>后期包、共享音效库等长期素材可以加在这里。</span></div>',
@@ -432,6 +451,8 @@
         qs('stateTitle').textContent = data.title;
         qs('stateDescription').textContent = data.desc;
         qs('batchStatus').textContent = data.status;
+        qs('backgroundStatus').hidden = !data.background;
+        qs('backgroundStatus').textContent = data.background || '';
         qs('fileCount').textContent = recovery ? '0' : data.files;
         qs('fileSize').textContent = recovery ? '0 B' : data.size;
         qs('railFill').style.width = `${data.progress}%`;
@@ -458,6 +479,9 @@
         recoverySourceOpen.disabled = !recovery || !recovery.source;
         recoveryOpen.disabled = !recovery || !recovery.target;
         recoveryClose.disabled = !(recovery && recovery.canClose);
+        qs('verifyRecoveryButton').hidden = !(recovery && recovery.canVerify);
+        qs('deferRecoveryButton').hidden = !recovery || recovery.canClose;
+        qs('cancelRecoveryButton').hidden = true;
         if (recovery) {
           qs('recoveryFilename').textContent = recovery.filename;
           qs('recoverySourceLabel').textContent = recovery.sourceLabel || '原位置';
@@ -482,10 +506,10 @@
         qs('handoffHint').textContent = name === 'waiting'
           ? '文件写完并自动整理后才能交接。'
           : ['running', 'moving'].includes(name)
-            ? '素材整理完成后才能交接。'
+            ? '素材整理完成后才能开始新一批。'
           : ['conflict', 'failure', 'savefailed'].includes(name)
-            ? '先完成上面的处理，才能完成交接。'
-            : '完成后，之后识别到的素材会进入下一个文件夹。';
+            ? '先完成上面的处理，才能开始新一批。'
+            : '每天自动分批；同一天需要分开时，可开始新一批。';
         const list = qs('activityList');
         while (list.firstChild) list.removeChild(list.firstChild);
         data.activity.forEach((activity, index) => {
@@ -549,8 +573,31 @@
         if (document.body.classList.contains('preview-mode')) setState('paused');
         window.dispatchEvent(new CustomEvent('batch-collector:close-recovery-record'));
       });
+      qs('verifyRecoveryButton').addEventListener('click', () => {
+        if (!document.body.classList.contains('preview-mode')) return;
+        qs('verifyRecoveryButton').disabled = true;
+        qs('stateTitle').textContent = '正在核验完整内容';
+        qs('recoveryConfirmation').textContent = '已核验 1.80 GB / 5.40 GB；两处文件均保留。';
+        qs('cancelRecoveryButton').hidden = false;
+      });
+      qs('cancelRecoveryButton').addEventListener('click', () => {
+        if (!document.body.classList.contains('preview-mode')) return;
+        setState('manual');
+        qs('verifyRecoveryButton').disabled = false;
+        qs('recoveryConfirmation').textContent = '核验已取消，两处文件均未改动。';
+      });
+      qs('deferRecoveryButton').addEventListener('click', () => {
+        if (document.body.classList.contains('preview-mode')) setState('paused');
+      });
       qs('handoffButton').addEventListener('click', () => window.dispatchEvent(new CustomEvent('batch-collector:handoff')));
-      qs('autoCollectToggle').addEventListener('change', (event) => window.dispatchEvent(new CustomEvent('batch-collector:auto-collect', { detail: { enabled: event.target.checked } })));
+      qs('autoCollectToggle').addEventListener('change', (event) => {
+        const enabled = event.target.checked;
+        if (document.body.classList.contains('preview-mode')) {
+          const background = Boolean((stateData[document.body.dataset.state] || {}).background);
+          setState(background ? (enabled ? 'background' : 'background-paused') : (enabled ? 'ready' : 'paused'));
+        }
+        window.dispatchEvent(new CustomEvent('batch-collector:auto-collect', { detail: { enabled } }));
+      });
       qs('stateAction').addEventListener('click', () => {
         const intent = qs('stateAction').dataset.previewIntent;
         if (document.body.classList.contains('preview-mode') && intent === 'settings') openSettingsPage();
@@ -600,6 +647,10 @@
   <script src="src/coordination.js"></script>
   <script src="src/premiere-adapter.js"></script>
   <script src="src/storage.js"></script>
+  <script src="src/sha256.js"></script>
+  <script src="src/file-service.js"></script>
+  <script src="src/recycle-bridge.js"></script>
+  <script src="src/confirmation.js"></script>
   <script src="src/main.js"></script>
 </body>
 </html>

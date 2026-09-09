@@ -5,12 +5,47 @@ const path = require("node:path");
 
 const source = fs.readFileSync(path.join(__dirname, "..", "src", "main.js"), "utf8");
 
+test("已暂缓历史不进入首页待处理计数，但扫描仍跳过对应素材", () => {
+  const start = source.indexOf("  function renderReviewItems()");
+  const end = source.indexOf("    var section = element(\"reviewSection\")", start);
+  assert.doesNotMatch(source.slice(start, end), /addReviewItem|deferredTransactions/);
+  assert.match(source, /deferredTransactions \|\| \[\]\)\.some\(function \(record\) \{ return Core\.samePath\(record\.sourcePath, group\.mediaPath\); \}\)\) continue/);
+});
+
+test("恢复页为其他工程提供入口，真实按钮直接绑定且阻止预览重复转发", () => {
+  assert.match(source, /view\.action = "找到原工程"/);
+  assert.match(source, /if \(intent === "找到原工程"\)/);
+  assert.match(source, /stateAction: handleStateAction/);
+  assert.match(source, /openRecoverySourceButton: openRecoverySource/);
+  assert.match(source, /openRecoveryTargetButton: openRecoveryTarget/);
+  assert.match(source, /event\.stopImmediatePropagation\(\)/);
+});
+
+test("暂缓有请求的事务前必须核对取消或失败并保存历史", () => {
+  const code = source.slice(source.indexOf("  async function deferCurrentRecovery()"), source.indexOf("  async function handoffCurrentBatch()"));
+  assert.match(code, /await queryBridge\.query/);
+  assert.match(code, /checked\.state !== "cancelled"/);
+  assert.match(code, /checked\.value\.status === "failed"/);
+  assert.match(code, /recycleAttempts:/);
+  assert.ok(code.indexOf("取消回收记录未可靠保存") < code.indexOf("State.deferTransaction"));
+  assert.match(code, /contextStillActive/);
+});
+
+test("旧恢复提示不再指向隐藏记录，文件大小不以历史值冒充实测值", () => {
+  const start = source.indexOf("  function storedRecoveryError(");
+  const end = source.indexOf("  function legacyBatchFolderNameForTarget(", start);
+  assert.match(source.slice(start, end), /message.indexOf\("最近记录"\)/);
+  assert.match(source.slice(start, end), /检查文件和链接/);
+  assert.match(source, /typeof snapshot.sourceSize === "number"/);
+  assert.match(source, /typeof snapshot.targetSize === "number"/);
+});
+
 test("面板显示和隐藏时，UI 绑定与监控生命周期保持分离", () => {
   assert.match(source, /var panelVisible = false;/);
   assert.match(source, /var uiBound = false;/);
   assert.match(source, /if \(!uiBound\)\s*\{\s*uiBound = true;\s*bindUi\(\);/s);
   assert.match(source, /refreshContext\(\{ force: true \}\)/);
-  assert.match(source, /function panelHide\(\)\s*\{\s*panelVisible = false;\s*stopMonitor\(false\);\s*stabilityTracker\.clear\(\);/s);
+  assert.match(source, /function panelHide\(\)\s*\{\s*confirmation\.cancel\(\);\s*panelVisible = false;\s*stopMonitor\(false\);\s*stabilityTracker\.clear\(\);/s);
   assert.doesNotMatch(source, /if \(initialized\) return;/);
 });
 

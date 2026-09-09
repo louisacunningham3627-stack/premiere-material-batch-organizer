@@ -10,7 +10,7 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function (Core) {
   "use strict";
 
-  var SCHEMA_VERSION = 1;
+  var SCHEMA_VERSION = 2;
   var COLLECTION_POLICY_VERSION = 3;
   var HISTORY_LIMIT = 200;
   var TRANSACTION_LIMIT = 100;
@@ -53,6 +53,7 @@
       knownMedia: {},
       pathMappings: {},
       pendingTransaction: null,
+      deferredTransactions: [],
       pendingProjectSave: null,
       transactions: [],
       activity: [],
@@ -126,7 +127,13 @@
   }
 
   function isCompatibleState(raw) {
-    if (!isRecord(raw) || raw.schemaVersion !== SCHEMA_VERSION) return false;
+    if (!isRecord(raw) || (raw.schemaVersion !== SCHEMA_VERSION && raw.schemaVersion !== 1)) return false;
+    if (raw.deferredTransactions != null && (!Array.isArray(raw.deferredTransactions)
+      || raw.deferredTransactions.some(function (entry) { return !isRecord(entry) || !entry.id || !Core.isAbsoluteLocalPath(entry.sourcePath) || !Core.isSafeRelativePath(entry.targetRelativePath); }))) return false;
+    var pendingItems = (raw.deferredTransactions || []).concat(raw.pendingTransaction ? [raw.pendingTransaction] : []);
+    var pendingIds = pendingItems.map(function (item) { return item.id; }).filter(Boolean);
+    if (new Set(pendingIds).size !== pendingIds.length) return false;
+    if (pendingItems.some(function (item) { return item.backgroundTask != null && !validBackgroundTask(item.backgroundTask); })) return false;
     var policyStatus = collectionPolicyStatus(raw);
     if (policyStatus === "future" || policyStatus === "invalid") return false;
     if (typeof raw.mediaSpaceId !== "string" || !raw.mediaSpaceId) return false;
@@ -151,7 +158,7 @@
   function validateStoredState(raw) {
     if (isRecord(raw)
       && Object.prototype.hasOwnProperty.call(raw, "schemaVersion")
-      && raw.schemaVersion !== SCHEMA_VERSION) {
+      && raw.schemaVersion !== SCHEMA_VERSION && raw.schemaVersion !== 1) {
       var error = new Error("素材空间状态由其他版本的插件创建，当前版本不会覆盖它");
       error.code = "MATERIAL_BATCH_STATE_SCHEMA_UNSUPPORTED";
       error.preventBackupFallback = true;
@@ -178,6 +185,10 @@
     state.workspaceName = typeof raw.workspaceName === "string" && raw.workspaceName ? raw.workspaceName : state.workspaceName;
     state.mediaFolderName = typeof raw.mediaFolderName === "string" && Core.isSafePathSegment(raw.mediaFolderName) ? raw.mediaFolderName : "素材";
     state.initialized = raw.initialized === true;
+    state.deferredTransactions = clone(raw.deferredTransactions || []);
+    if (typeof raw.nextBatchRequestedAt === "string" && Number.isFinite(Date.parse(raw.nextBatchRequestedAt))) {
+      state.nextBatchRequestedAt = raw.nextBatchRequestedAt;
+    }
     state.collectionPolicyVersion = Math.max(1, Math.floor(Number(raw.collectionPolicyVersion)
       || (state.initialized ? 1 : COLLECTION_POLICY_VERSION)));
     state.protectedConfigRevision = Math.max(1, Math.floor(Number(raw.protectedConfigRevision) || 1));
@@ -624,6 +635,8 @@
       mode: String(mergeTransactionField(result, pending, "mode") || ""),
       targetMethod: String(mergeTransactionField(result, pending, "targetMethod") || ""),
       modeEvidence: clone(mergeTransactionField(result, pending, "modeEvidence") || {}),
+      recycleReceipt: clone(mergeTransactionField(result, pending, "recycleReceipt") || {}),
+      legacyVerification: clone(mergeTransactionField(result, pending, "legacyVerification") || {}),
       projectPath: String(mergeTransactionField(result, pending, "projectPath") || ""),
       projectIdentity: String(mergeTransactionField(result, pending, "projectIdentity") || ""),
       deleteSource: hasOwn(result, "deleteSource") && result.deleteSource !== undefined
@@ -839,6 +852,75 @@
     return touch(next, at);
   }
 
+  function requestNextBatch(state, at) {
+    if (state.pendingTransaction || state.pendingProjectSave) throw new Error("当前操作尚未完成，不能开始新一批");
+    var next = clone(state);
+    next.nextBatchRequestedAt = iso(at);
+    return touch(next, at);
+  }
+
+  function validBackgroundTask(value) {
+    return isRecord(value) && value.version === 1 && ["cleanup", "held"].indexOf(value.kind) >= 0
+      && Number.isSafeInteger(value.attempts) && value.attempts >= 1
+      && typeof value.nextAttemptAt === "string" && Number.isFinite(Date.parse(value.nextAttemptAt))
+      && typeof value.message === "string";
+  }
+
+  function deferTransaction(state, at, backgroundTask) {
+    if (!state.pendingTransaction || state.pendingProjectSave) throw new Error("当前没有可暂缓的单项事务");
+    if (state.pendingTransaction.recycleRequest && !state.pendingTransaction.recycleReceipt) throw new Error("回收结果尚不明确，请先核对，不能暂缓正在提交的回收");
+    var next = clone(state);
+    next.deferredTransactions = next.deferredTransactions || [];
+    if (next.deferredTransactions.some(function (item) { return item.id === next.pendingTransaction.id; })) throw new Error("暂缓记录已存在");
+    if (backgroundTask != null && !validBackgroundTask(backgroundTask)) throw new Error("后台等待记录无效");
+    var deferred = Object.assign({}, next.pendingTransaction, { deferredAt: iso(at) });
+    if (backgroundTask) deferred.backgroundTask = clone(backgroundTask);
+    next.deferredTransactions.push(deferred);
+    next.pendingTransaction = null;
+    return touch(next, at);
+  }
+
+  function resumeDeferred(state, transactionId, at) {
+    if (state.pendingTransaction || state.pendingProjectSave) throw new Error("请先处理当前未完成操作");
+    var next = clone(state);
+    var record = (next.deferredTransactions || []).find(function (item) { return item.id === transactionId; });
+    if (!record) throw new Error("暂缓记录不存在");
+    next.pendingTransaction = record;
+    next.deferredTransactions = next.deferredTransactions.filter(function (item) { return item.id !== transactionId; });
+    return touch(next, at);
+  }
+
+  function nextBackgroundCleanup(state, projectPath, projectIdentity, at) {
+    if (state.pendingTransaction || state.pendingProjectSave) return null;
+    var now = new Date(at).getTime();
+    return (state.deferredTransactions || []).filter(function (item) {
+      return validBackgroundTask(item.backgroundTask) && item.backgroundTask.kind === "cleanup"
+        && Core.samePath(item.projectPath, projectPath) && item.projectIdentity === projectIdentity
+        && Date.parse(item.backgroundTask.nextAttemptAt) <= now;
+    }).sort(function (left, right) {
+      return Date.parse(left.backgroundTask.nextAttemptAt) - Date.parse(right.backgroundTask.nextAttemptAt);
+    })[0] || null;
+  }
+
+  function prepareCollectionBatch(state, at) {
+    if (state.pendingTransaction || state.pendingProjectSave) throw new Error("当前操作尚未完成，不能切换素材文件夹");
+    var active = currentBatch(state);
+    var day = Core.localChineseDateStamp(at);
+    var changedDay = Core.localChineseDateStamp(new Date(active.createdAt)) !== day;
+    if (!changedDay && !state.nextBatchRequestedAt) return clone(state);
+    var next = lockAndCreateNextBatch(state, at);
+    if (state.nextBatchRequestedAt) {
+      var date = at instanceof Date ? at : new Date(at);
+      var name = day + " " + String(date.getHours()).padStart(2, "0") + "时"
+        + String(date.getMinutes()).padStart(2, "0") + "分" + String(date.getSeconds()).padStart(2, "0") + "秒添加素材";
+      var names = state.batches.map(function (batch) { return batch.name; });
+      if (names.indexOf(name) >= 0) throw new Error("同一时刻已建立素材批次，请稍后再试");
+      currentBatch(next).name = name;
+    }
+    delete next.nextBatchRequestedAt;
+    return next;
+  }
+
   function addProtectedLibrary(state, libraryId, label, at) {
     var next = clone(state);
     var exists = next.protectedLibraries.some(function (library) { return library.libraryId === libraryId; });
@@ -893,6 +975,11 @@
     initializeCollection: initializeCollection,
     initializeBaseline: initializeBaseline,
     lockAndCreateNextBatch: lockAndCreateNextBatch,
+    requestNextBatch: requestNextBatch,
+    deferTransaction: deferTransaction,
+    nextBackgroundCleanup: nextBackgroundCleanup,
+    resumeDeferred: resumeDeferred,
+    prepareCollectionBatch: prepareCollectionBatch,
     markCleanupPending: markCleanupPending,
     markKnown: markKnown,
     markProjectBaseline: markProjectBaseline,

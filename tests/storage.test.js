@@ -812,3 +812,15 @@ test("主状态模式版本来自未来时绝不会回退或覆盖旧版备份",
     assert.deepEqual(JSON.parse(await fs.readFile(statePath + ".bak", "utf8")), current);
   });
 });
+
+test("打开工程时只清理已完成回收凭据并保留当前事务凭据", async () => {
+  await withFolder(async (statePath) => {
+    const keep = "a".repeat(32), remove = "b".repeat(32);
+    await fs.writeFile(statePath + ".recycle-" + keep + ".issued", "keep", "utf8");
+    await fs.writeFile(statePath + ".recycle-" + remove + ".issued", "remove", "utf8");
+    const state = { pendingTransaction: { recycleRequest: { id: keep } } };
+    assert.equal(await Storage.cleanupOrphanedRecycleCredentials(fs, statePath, state), 1);
+    await assert.rejects(fs.stat(statePath + ".recycle-" + remove + ".issued"), { code: "ENOENT" });
+    assert.equal(await fs.readFile(statePath + ".recycle-" + keep + ".issued", "utf8"), "keep");
+  });
+});

@@ -39,7 +39,7 @@ test("主页提供明确的管理入口，并把名单数量作为单独信息�
 test("设置页明确当前共享范围、连接状态和每项操作", () => {
   assert.match(html, /当前工程文件夹/);
   assert.match(html, /同一文件夹里的所有 Premiere 工程共用这份名单/);
-  assert.match(html, /名单改变后，每个工程都要先确认新名单，再单独点击“开始整理此工程”/);
+  assert.match(html, /确认一次新名单后，同目录工程共用设置/);
   assert.match(source, /还没有添加文件夹/);
   assert.match(source, /statusLabel\.textContent = status\.valid \? "可正常使用" : "需要重新选择"/);
   assert.match(source, /mapAction\.textContent = status\.valid \? "更换文件夹" : "选择本机文件夹"/);
@@ -123,7 +123,7 @@ test("主页用文字说明当前工程、整理开关、交接文件夹和重�
   assert.doesNotMatch(html, /class="status-dot"/);
   assert.match(html, /class="toggle-label">自动整理<\/span>/);
   assert.doesNotMatch(styles, /\.toggle-label\s*\{[^}]*display:\s*none/s);
-  assert.match(html, /id="batchHeading">当前交接文件夹<\/h2>/);
+  assert.match(html, /id="batchHeading">当前素材文件夹<\/h2>/);
   assert.match(html, /<div class="destination-path"[^>]*>[\s\S]*?<span>磁盘位置<\/span>/);
   assert.match(html, /id="refreshButton"[^>]*>重新检查<\/button>/);
 });

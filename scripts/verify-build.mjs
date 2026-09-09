@@ -16,6 +16,10 @@ const sourceFiles = [
   "premiere-adapter.js",
   "storage.js",
   "main.js",
+  "sha256.js",
+  "file-service.js",
+  "recycle-bridge.js",
+  "confirmation.js",
 ];
 
 async function exists(filePath) {
@@ -38,7 +42,7 @@ assert.equal(manifest.host.app, "premierepro");
 assert.equal(manifest.host.minVersion, "25.6.0");
 assert.equal(manifest.requiredPermissions.localFileSystem, "fullAccess");
 assert.deepEqual(manifest.requiredPermissions.launchProcess.schemes, ["file"]);
-assert.deepEqual(manifest.requiredPermissions.launchProcess.extensions, [""], "必须允许打开无扩展名的素材文件夹");
+assert.equal(manifest.requiredPermissions.launchProcess.extensions, undefined, "不声明空扩展名启动权限");
 assert.equal(manifest.entrypoints[0].id, "materialBatchOrganizer");
 assert.equal(manifest.version, packageJson.version);
 
@@ -62,6 +66,7 @@ for (const fileName of sourceFiles) {
 }
 
 const html = await readFile(path.join(distDirectory, "index.html"), "utf8");
+assert.ok(html.includes(`版本 ${manifest.version}`), "面板版本号必须与实际安装清单一致");
 const mainSource = await readFile(path.join(distDirectory, "src", "main.js"), "utf8");
 const transactionSource = await readFile(path.join(distDirectory, "src", "transaction.js"), "utf8");
 for (const fileName of sourceFiles) {
@@ -85,5 +90,8 @@ assert.match(mainSource, /cleanupPath:\s*cleanupPath/, "必须持久化清理路
 assert.match(await readFile(path.join(distDirectory, "src", "premiere-adapter.js"), "utf8"), /getRootItem\s*\(/);
 
 const topLevel = (await readdir(distDirectory)).sort();
-assert.deepEqual(topLevel, ["icons", "index.html", "manifest.json", "src", "styles.css"]);
+assert.deepEqual(topLevel, process.platform === "win32"
+  ? ["icons", "index.html", "manifest.json", "native", "src", "styles.css"]
+  : ["icons", "index.html", "manifest.json", "src", "styles.css"]);
+assert.match(mainSource, /sourceDisposition:\s*"recycle"/);
 console.log("UXP 构建校验通过：清单、界面契约、源码哈希和安全接口均有效。");

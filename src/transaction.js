@@ -21,6 +21,10 @@
   }
 
   function userSafeFailureDetail(error, fallback) {
+    if (error && error.code === "MATERIAL_RECYCLE_LAUNCH_FAILED") return "本地文件助手未运行或正在忙，原件保留；运行插件安装器可修复助手";
+    if (error && error.code === "MATERIAL_RECYCLE_NOT_COMMITTED") return "系统回收助手未响应，未提交回收，原件保留";
+    if (error && error.code === "MATERIAL_RECYCLE_CANCELLED") return "回收请求已取消，原件保留";
+    if (error && error.code === "MATERIAL_RECYCLE_REQUEST_EXISTS") return "上次回收请求尚未核对，未重复提交；需要先核对请求状态";
     var message = "";
     try { message = String(error && error.message || "").trim(); } catch (readError) {}
     var startsAsUserMessage = /^[“《（(]*[\u3400-\u9fff]/.test(message) || /^Premiere\s+[\u3400-\u9fff]/.test(message);
@@ -39,16 +43,45 @@
     return error instanceof TypeError || /bigint|unsupported|not supported|option|argument|参数|不支持/i.test(message);
   }
 
-  // Node 的 Windows 文件身份可能超过 JS 安全整数范围。优先要求 bigint；
-  // UXP 等只接受一个参数的接口则安全回退到普通 lstat，由指纹层拒绝不安全数字。
+  function snapshotStat(stat) {
+    var snapshot = { size: stat.size, mtimeMs: statMtime(stat), ctimeMs: statCtime(stat),
+      birthtimeMs: statBirthtime(stat), dev: stat.dev, ino: stat.ino };
+    // UXP 类型方法依赖原生接收对象，不能在 Object.create(stat) 的包装上调用。
+    ["isFile", "isDirectory", "isSymbolicLink"].forEach(function (name) {
+      if (typeof stat[name] !== "function") return;
+      var result = stat[name]();
+      snapshot[name] = function () { return result; };
+    });
+    return snapshot;
+  }
+
+  // Node 使用 bigint；已知 UXP 接口只传支持的单参数，不以原生异常探测能力。
   async function lstatForIdentity(fs, nativePath) {
     if (!fs || typeof fs.lstat !== "function") throw new Error("当前文件接口不支持 lstat");
+    var stat;
     try {
-      return await fs.lstat(nativePath, { bigint: true });
+      stat = fs.lstatSupportsBigInt === false
+        ? await fs.lstat(nativePath) : await fs.lstat(nativePath, { bigint: true });
     } catch (error) {
       if (!isBigIntLstatUnsupported(error)) throw error;
-      return fs.lstat(nativePath);
+      stat = await fs.lstat(nativePath);
     }
+    if (stat && typeof stat.isFile === "function" && stat.isFile() && !identityDecimal(stat.ino) && typeof fs.materialIdentity === "function") {
+      var before = snapshotStat(stat);
+      var native = await fs.materialIdentity(nativePath);
+      var after = snapshotStat(await fs.lstat(nativePath));
+      if (typeof after.isFile !== "function" || !after.isFile()
+        || Number(native.size) !== statSize(before) || Number(native.size) !== statSize(after)
+        || Math.floor(statMtime(before)) !== Number(native.mtimeMs) || Math.floor(statMtime(after)) !== Number(native.mtimeMs)
+        || statCtime(before) !== statCtime(after) || statBirthtime(before) !== statBirthtime(after)
+        || String(after.dev) !== String(native.dev) || Number(after.ino) !== Number(native.ino))
+        throw new Error("读取精确文件身份期间素材发生变化，未继续处理");
+      ["size", "mtimeMs", "birthtimeMs", "dev", "ino"].forEach(function (key) {
+        after[key] = native[key];
+      });
+      return after;
+    }
+    return stat;
   }
 
   async function exists(fs, nativePath) {
@@ -422,6 +455,7 @@
 
     // 从此刻开始，即使 refreshMedia 或后续验证抛错，也不能再把它当作未改链。
     markChanged();
+    if ((await readLinkState(projectItem, targetPath)).atTarget) return;
     try {
       await projectItem.refreshMedia();
     } catch (refreshError) {
@@ -489,42 +523,6 @@
     if (!successfulFsResult(result)) throw new Error("关闭目标占位文件时返回了意外结果: " + result);
   }
 
-  async function renameTargetWithoutOverwrite(fs, sourcePath, targetPath, sourceStat, context) {
-    if (typeof fs.link !== "function") throw new Error("当前文件接口不支持安全的同盘移动，未移动素材");
-    var sourceFingerprint = fingerprintFromStat(sourceStat);
-    if (!hasHardLinkIdentity(sourceFingerprint)) {
-      throw new Error("文件系统未提供可验证的源文件身份，未移动素材");
-    }
-    var linkResult = await fs.link(sourcePath, targetPath);
-    context.targetCreated = true;
-    context.targetMethod = context.mode === "copy" ? "copy-link" : "link";
-    if (!successfulFsResult(linkResult)) throw new Error("建立安全目标文件时返回了意外结果: " + linkResult);
-    try {
-      var linkedSourceFingerprint = fingerprintFromStat(await lstatForIdentity(fs, sourcePath));
-      var linkedFingerprint = fingerprintFromStat(await lstatForIdentity(fs, targetPath));
-      if (context.mode !== "copy") context.sourceFingerprint = linkedSourceFingerprint;
-      context.targetFingerprint = linkedFingerprint;
-      if (!sameStrongFileAfterRename(sourceFingerprint, linkedFingerprint)
-        || !sameHardLinkRecoveryFingerprint(linkedSourceFingerprint, linkedFingerprint)) {
-        throw new Error("建立目标文件后身份校验失败，已保留源文件");
-      }
-      await unlink(fs, sourcePath);
-      context.sourceMovedToTarget = true;
-      return context.mode === "copy" ? "copy-link" : "link";
-    } catch (error) {
-      // 只有确认目标仍是本次建立的同一硬链接时才允许回收目标。
-      try {
-        var currentTargetFingerprint = fingerprintFromStat(await lstatForIdentity(fs, targetPath));
-        if (context.targetFingerprint && sameStrongPathFingerprint(context.targetFingerprint, currentTargetFingerprint)) {
-          await unlink(fs, targetPath);
-          context.targetCreated = false;
-          context.targetFingerprint = null;
-        }
-      } catch (cleanupError) {}
-      throw error;
-    }
-  }
-
   async function createTargetWithoutOverwrite(fs, sourcePath, targetPath, sourceStat, context) {
     var sourceFingerprint = fingerprintFromStat(sourceStat);
     if (!hasHardLinkIdentity(sourceFingerprint)) {
@@ -582,56 +580,6 @@
     var canRelinkToSource = true;
     var preserveCreatedPayload = context.mode === "copy" || context.targetMethod === "link";
     var linkChangeRiskCount = context.changedItems.length + context.possiblyChangedItems.length;
-
-    if (context.mode === "rename" && context.targetMethod === "rename" && context.sourceMovedToTarget) {
-      if (linkChangeRiskCount) {
-        canRelinkToSource = false;
-        warnings.push(context.possiblyChangedItems.length
-          ? "整理未完成，无法确认 Premiere 当前链接；新位置文件已保留"
-          : "整理未完成，已保持 Premiere 指向新位置，未自动恢复旧路径");
-      } else if (sourceExists) {
-        warnings.push("原路径已出现另一份文件，未自动移回素材");
-        canRelinkToSource = false;
-      } else if (!targetExists) {
-        warnings.push("移动后的素材不在预期目标位置，无法自动回滚");
-        canRelinkToSource = false;
-      } else {
-        var restoreContext = {
-          targetCreated: false,
-          targetFingerprint: null,
-          sourceMovedToTarget: false,
-        };
-        try {
-          var rollbackMovedFingerprint = fingerprintFromStat(await lstatForIdentity(options.fs, options.targetPath));
-          if (!context.targetFingerprint || !sameStrongPathFingerprint(context.targetFingerprint, rollbackMovedFingerprint)) {
-            throw new Error("移动后的素材身份发生变化");
-          }
-          await renameTargetWithoutOverwrite(
-            options.fs,
-            options.targetPath,
-            options.sourcePath,
-            await lstatForIdentity(options.fs, options.targetPath),
-            restoreContext
-          );
-          context.sourceMovedToTarget = false;
-          context.targetCreated = false;
-          context.targetFingerprint = null;
-          sourceExists = true;
-          targetExists = false;
-        } catch (error) {
-          canRelinkToSource = false;
-          if (restoreContext.targetCreated && !restoreContext.sourceMovedToTarget && restoreContext.targetFingerprint) {
-            try {
-              var restoreReservationFingerprint = fingerprintFromStat(await lstatForIdentity(options.fs, options.sourcePath));
-              if (sameStrongPathFingerprint(restoreContext.targetFingerprint, restoreReservationFingerprint)) {
-                await unlink(options.fs, options.sourcePath);
-              }
-            } catch (cleanupError) {}
-          }
-          warnings.push("素材移回原路径失败；相关文件已保留，请人工检查新旧位置");
-        }
-      }
-    }
 
     if (preserveCreatedPayload && linkChangeRiskCount) {
       canRelinkToSource = false;
@@ -813,6 +761,9 @@
         });
       }
       await assertContext(options.validate);
+      var deferRelink = options.deferSaveAndCleanup === true && typeof options.shouldDeferRelink === "function"
+        && await options.shouldDeferRelink();
+      if (!deferRelink) {
       notify(options.onStage, "relink", { itemCount: projectItems.length });
       await relinkMany(projectItems, targetPath, wait, {
         sourcePath: sourcePath,
@@ -822,8 +773,23 @@
           if (context.warnings.indexOf(message) < 0) context.warnings.push(message);
         },
       });
+      }
 
       await assertContext(options.validate);
+      if (options.deferSaveAndCleanup === true) {
+        if (!deferRelink) await assertTargetAndLinks({
+          fs: fs, targetPath: targetPath, targetFingerprint: context.targetFingerprint,
+          projectItems: projectItems, validate: options.validate, wait: wait,
+          allowHardLinkCtimeChange: context.targetMethod === "link",
+        });
+        return {
+          awaitingProjectSave: true, sourceRetained: true, sourcePath: sourcePath, targetPath: targetPath,
+          linksReady: !deferRelink,
+          cleanupPath: cleanupPath, byteCount: byteCount, sourceFingerprint: context.sourceFingerprint,
+          targetFingerprint: context.targetFingerprint, targetMethod: context.targetMethod,
+          mode: context.mode, modeEvidence: context.modeEvidence, warnings: context.warnings.slice(),
+        };
+      }
       notify(options.onStage, "save", {});
       if (typeof options.persistProject !== "function") throw new Error("缺少 Premiere 工程保存步骤");
       if ((await options.persistProject()) === false) throw new Error("Premiere 工程保存失败");
@@ -842,135 +808,18 @@
       var sourceChanged = false;
       var remainingSourcePath = "";
       var cleanupVerificationPending = false;
-      if (!(context.mode === "rename" && context.targetMethod === "rename")) {
-        notify(options.onStage, "cleanup", {});
-        try {
-          await assertContext(options.validate);
-          var cleanupStat = await lstatForIdentity(fs, sourcePath);
-          if (!sameStrongPathFingerprint(cleanupFingerprint, fingerprintFromStat(cleanupStat))) {
-            sourceChanged = true;
-            remainingSourcePath = sourcePath;
-            cleanupWarning = "原路径已出现另一份文件，未删除这份新文件";
-          } else {
-            if (typeof options.beforeSourceCleanup === "function") {
-              var beforeCleanupResult = await options.beforeSourceCleanup({
-                id: options.id,
-                sourcePath: sourcePath,
-                targetPath: targetPath,
-                cleanupPath: cleanupPath,
-                sourceFingerprint: cleanupFingerprint,
-                targetFingerprint: context.targetFingerprint,
-                targetMethod: context.targetMethod,
-                projectItems: projectItems.slice(),
-              });
-              if (beforeCleanupResult === false) {
-                throw new Error("移出原位置前的最终核验未通过，未移动或删除原素材");
-              }
-              await assertContext(options.validate);
-              cleanupStat = await lstatForIdentity(fs, sourcePath);
-              if (!sameStrongPathFingerprint(cleanupFingerprint, fingerprintFromStat(cleanupStat))) {
-                throw new Error("原素材在移出原位置前发生变化，未移动或删除原素材");
-              }
-            }
-            if (await exists(fs, cleanupPath)) {
-              throw new Error("待删除位置已被其他文件占用，未移动或删除原素材");
-            }
-            await rename(fs, sourcePath, cleanupPath);
-            var quarantinedFingerprint = fingerprintFromStat(await lstatForIdentity(fs, cleanupPath));
-            if (!sameStrongFileAfterRename(sourceFingerprint, quarantinedFingerprint)) {
-              if (await exists(fs, sourcePath)) throw new Error("原路径和待删除路径都出现了新文件，未执行删除");
-              await rename(fs, cleanupPath, sourcePath);
-              sourceChanged = true;
-              remainingSourcePath = sourcePath;
-              cleanupWarning = "原路径已出现另一份文件，已恢复它且未执行删除";
-            } else {
-              if (context.targetMethod === "link") {
-                var linkedTargetFingerprint = fingerprintFromStat(await lstatForIdentity(fs, targetPath));
-                if (!sameFileAfterRename(quarantinedFingerprint, linkedTargetFingerprint)) {
-                  throw new Error("同盘目标文件身份在原位置隔离后发生变化，未执行删除");
-                }
-                // 重命名同一 inode 的另一条硬链接会合法更新 ctime；从此刻继续使用新检查点。
-                context.targetFingerprint = linkedTargetFingerprint;
-              }
-              await assertContext(options.validate);
-              // 下载任务可能会在原路径被隔离后继续写入。
-              // 等待一个可注入的稳定间隔；如果隔离文件在此期间发生变化，
-              // 则拒绝删除该文件。
-              var quarantineBeforeWait = quarantinedFingerprint;
-              await cleanupWait(CLEANUP_SETTLING_MS);
-              var quarantineAfterWait = fingerprintFromStat(await lstatForIdentity(fs, cleanupPath));
-              if (!sameStrongPathFingerprint(quarantineBeforeWait, quarantineAfterWait)) {
-                cleanupVerificationPending = true;
-                throw new Error("待删除文件在稳定复核期间发生变化，未执行删除");
-              }
-              await assertTargetAndLinks({
-                fs: fs,
-                targetPath: targetPath,
-                targetFingerprint: context.targetFingerprint,
-                projectItems: projectItems,
-                validate: options.validate,
-                wait: wait,
-                beforeDeleteDetails: {
-                  id: options.id,
-                  sourcePath: sourcePath,
-                  cleanupPath: cleanupPath,
-                  quarantinedFingerprint: quarantineAfterWait,
-                  targetMethod: context.targetMethod,
-                },
-              }, options.beforeDelete);
-              var quarantineBeforeDelete = fingerprintFromStat(await lstatForIdentity(fs, cleanupPath));
-              if (!sameStrongPathFingerprint(quarantineAfterWait, quarantineBeforeDelete)) {
-                throw new Error("待删除文件在最终核验期间发生变化，未执行删除");
-              }
-              var targetBeforeUnlinkFingerprint = fingerprintFromStat(await lstatForIdentity(fs, targetPath));
-              if (!sameStrongPathFingerprint(context.targetFingerprint, targetBeforeUnlinkFingerprint)) {
-                throw new Error("新位置文件在最终删除前发生变化，未执行删除");
-              }
-              cleanupVerificationPending = true;
-              var unlinkResult = await fs.unlink(cleanupPath);
-              if (!successfulFsResult(unlinkResult)) throw new Error("删除文件时返回了意外结果: " + unlinkResult);
-              var targetAfterUnlinkFingerprint = fingerprintFromStat(await lstatForIdentity(fs, targetPath));
-              var targetStillSame = context.targetMethod === "link"
-                ? sameHardLinkRecoveryFingerprint(targetBeforeUnlinkFingerprint, targetAfterUnlinkFingerprint)
-                : sameStrongPathFingerprint(targetBeforeUnlinkFingerprint, targetAfterUnlinkFingerprint);
-              if (!targetStillSame) throw new Error("删除原位置后无法确认新位置仍是同一文件");
-              context.targetFingerprint = targetAfterUnlinkFingerprint;
-              cleanupVerificationPending = false;
-            }
-          }
-        } catch (error) {
-          try {
-            var sourceStillExists = await exists(fs, sourcePath);
-            var cleanupStillExists = await exists(fs, cleanupPath);
-            if (!sourceStillExists && !cleanupStillExists) {
-              cleanupPending = cleanupVerificationPending;
-              if (cleanupVerificationPending) {
-                cleanupWarning = "原素材已移出，但删除后的新位置核验没有完成";
-              }
-            } else if (sourceStillExists && !cleanupStillExists) {
-              var remainingFingerprint = fingerprintFromStat(await lstatForIdentity(fs, sourcePath));
-              if (!sameStrongPathFingerprint(cleanupFingerprint, remainingFingerprint)) {
-                sourceChanged = true;
-                remainingSourcePath = sourcePath;
-                cleanupPending = false;
-                cleanupWarning = "原路径已出现另一份文件，未删除这份新文件";
-              } else {
-                cleanupPending = true;
-                remainingSourcePath = sourcePath;
-                cleanupWarning = "待删除的原素材仍在：" + sourcePath + "；"
-                  + userSafeFailureDetail(error, "请人工检查后重新处理");
-              }
-            } else {
-              cleanupPending = true;
-              remainingSourcePath = cleanupPath;
-              cleanupWarning = "待删除的原素材仍在：" + cleanupPath + "；"
-                + userSafeFailureDetail(error, "请人工检查后重新处理");
-            }
-          } catch (inspectionError) {
-            cleanupPending = true;
-            cleanupWarning = "无法确认原素材是否已经删除；相关文件已保留，请人工检查";
-          }
-        }
+      {
+        var recycled = await recycleVerifiedSource(Object.assign({}, options, {
+          sourceFingerprint: cleanupFingerprint,
+          targetFingerprint: context.targetFingerprint,
+          targetMethod: context.targetMethod,
+          projectItems: projectItems,
+        }));
+        cleanupPending = recycled.cleanupPending;
+        cleanupWarning = recycled.cleanupWarning;
+        remainingSourcePath = recycled.remainingSourcePath;
+        sourceChanged = recycled.sourceChanged;
+        context.targetFingerprint = recycled.targetFingerprint;
       }
 
       var actualTargetFingerprint = fingerprintFromStat(await lstatForIdentity(fs, targetPath));
@@ -990,6 +839,7 @@
         sourceChanged: sourceChanged,
         cleanupPending: cleanupPending,
         cleanupWarning: cleanupWarning,
+        cleanupFailure: recycled.cleanupFailure || null,
         remainingSourcePath: remainingSourcePath,
         warnings: context.warnings.slice(),
       };
@@ -1045,194 +895,63 @@
   }
 
   async function cleanupVerifiedSource(options) {
-    var fs = options.fs;
-    var sourcePath = String(options.sourcePath || "");
-    var cleanupPath = String(options.cleanupPath || cleanupPathFor(sourcePath, options.id));
-    var sourceFingerprint = options.sourceFingerprint;
-    var cleanupWait = options.cleanupWait || options.wait || delay;
-    var result = {
-      cleanupPending: false,
-      cleanupWarning: "",
-      sourceChanged: false,
-      remainingSourcePath: "",
-      targetFingerprint: options.targetFingerprint || null,
-      targetMethod: String(options.targetMethod || ""),
-    };
-
-    if (Core.isProjectFile(sourcePath)) throw new Error("Premiere 工程文件不允许进入源文件清理");
-    if (
-      !Core.isAbsoluteLocalPath(sourcePath)
-      || !Core.isAbsoluteLocalPath(cleanupPath)
-      || Core.samePath(cleanupPath, sourcePath)
-      || !Core.samePath(Core.dirname(cleanupPath), Core.dirname(sourcePath))
-    ) {
-      throw new Error("待删除文件路径不安全");
-    }
-    if (!sourceFingerprint || !Number.isFinite(Number(sourceFingerprint.size))) {
-      throw new Error("缺少可验证的源文件身份，未清理原位置文件");
-    }
-    if (!Core.isAbsoluteLocalPath(options.targetPath)
-      || !samePortableFingerprint(options.targetFingerprint, options.targetFingerprint)
-      || !Array.isArray(options.projectItems)
-      || !options.projectItems.filter(Boolean).length) {
-      throw new Error("缺少删除前的新位置或 Premiere 链接证据，未清理原位置文件");
-    }
-
-    await assertContext(options.validate);
-    var sourceExists = await exists(fs, sourcePath);
-    var cleanupExists = await exists(fs, cleanupPath);
-    async function refreshRecordedTarget(allowHardLinkCtimeChange) {
-      var currentTargetFingerprint = fingerprintFromStat(await lstatForIdentity(fs, options.targetPath));
-      if (!sameStrongPathFingerprint(options.targetFingerprint, currentTargetFingerprint)
-        && !(allowHardLinkCtimeChange
-          && sameHardLinkRecoveryFingerprint(options.targetFingerprint, currentTargetFingerprint))) {
-        throw new Error("新位置文件与整理记录不一致");
-      }
-      result.targetFingerprint = currentTargetFingerprint;
-      return currentTargetFingerprint;
-    }
-    if (!sourceExists && !cleanupExists) {
-      await refreshRecordedTarget(result.targetMethod === "link");
-      return result;
-    }
-    if (sourceExists && cleanupExists) {
-      result.cleanupPending = true;
-      result.cleanupWarning = "原位置和待删除位置同时存在文件，未自动删除";
-      result.remainingSourcePath = cleanupPath;
-      return result;
-    }
-
-    if (sourceExists) {
-      var currentSourceFingerprint = fingerprintFromStat(await lstatForIdentity(fs, sourcePath));
-      if (!hasHardLinkIdentity(sourceFingerprint) || !hasHardLinkIdentity(currentSourceFingerprint)) {
-        result.cleanupPending = true;
-        result.cleanupWarning = "文件系统未提供可验证的原素材身份，未自动删除";
-        result.remainingSourcePath = sourcePath;
-        return result;
-      }
-      if (!sameStrongPathFingerprint(sourceFingerprint, currentSourceFingerprint)
-        && !(result.targetMethod === "link"
-          && sameHardLinkRecoveryFingerprint(sourceFingerprint, currentSourceFingerprint))) {
-        await refreshRecordedTarget(result.targetMethod === "link");
-        result.sourceChanged = true;
-        result.remainingSourcePath = sourcePath;
-        result.cleanupWarning = "原路径已出现另一份文件，未删除这份新文件";
-        return result;
-      }
-      sourceFingerprint = currentSourceFingerprint;
-      try {
-        if (typeof options.beforeSourceCleanup === "function") {
-          var beforeCleanupResult = await options.beforeSourceCleanup({
-            id: options.id,
-            sourcePath: sourcePath,
-            targetPath: options.targetPath,
-            cleanupPath: cleanupPath,
-            sourceFingerprint: sourceFingerprint,
-            targetFingerprint: options.targetFingerprint,
-            targetMethod: result.targetMethod,
-            projectItems: options.projectItems.filter(Boolean),
-          });
-          if (beforeCleanupResult === false) {
-            throw new Error("移出原位置前的最终核验未通过");
-          }
-          await assertContext(options.validate);
-          currentSourceFingerprint = fingerprintFromStat(await lstatForIdentity(fs, sourcePath));
-          if (!sameStrongPathFingerprint(sourceFingerprint, currentSourceFingerprint)) {
-            throw new Error("原素材在移出原位置前发生变化");
-          }
+    return recycleVerifiedSource(options);
+  }
+  async function recycleVerifiedSource(options) {
+    var result = { cleanupPending: true, cleanupWarning: "", remainingSourcePath: options.sourcePath,
+      sourceChanged: false, targetFingerprint: options.targetFingerprint, targetMethod: options.targetMethod };
+    try {
+      if (typeof options.recycle !== "function") throw new Error("回收站助手不可用，原文件保留；不会永久删除");
+      var sourcePath = options.sourcePath;
+      if (!Core.isAbsoluteLocalPath(sourcePath) || !Core.isAbsoluteLocalPath(options.targetPath)
+        || Core.samePath(sourcePath, options.targetPath)) throw new Error("回收源和目标路径无效");
+      if (options.cleanupPath) {
+        if (!Core.isAbsoluteLocalPath(options.cleanupPath) || Core.samePath(sourcePath, options.cleanupPath)
+          || !Core.samePath(Core.dirname(sourcePath), Core.dirname(options.cleanupPath))) throw new Error("旧待处理路径不安全");
+        if (await exists(options.fs, options.cleanupPath)) {
+          if (await exists(options.fs, sourcePath)) throw new Error("原位置与旧待处理位置同时存在，不能唯一确认原素材");
+          sourcePath = options.cleanupPath;
         }
-        if (await exists(fs, cleanupPath)) {
-          throw new Error("待删除位置已被其他文件占用");
-        }
-        await rename(fs, sourcePath, cleanupPath);
-        cleanupExists = true;
-      } catch (renameError) {
-        result.cleanupPending = true;
-        result.cleanupWarning = "原素材暂时无法移出原位置，未自动删除";
-        result.remainingSourcePath = sourcePath;
-        return result;
       }
-    }
-
-    var quarantinedFingerprint;
-    try {
-      quarantinedFingerprint = fingerprintFromStat(await lstatForIdentity(fs, cleanupPath));
-    } catch (readError) {
-      result.cleanupPending = true;
-      result.cleanupWarning = "无法核对待删除的原素材，未自动删除";
-      result.remainingSourcePath = cleanupPath;
-      return result;
-    }
-    if (!sameStrongFileAfterRename(sourceFingerprint, quarantinedFingerprint)) {
-      result.cleanupPending = true;
-      result.cleanupWarning = "待删除文件与原素材身份不一致，未自动删除";
-      result.remainingSourcePath = cleanupPath;
-      return result;
-    }
-
-    var cleanupTargetFingerprint;
-    try {
-      cleanupTargetFingerprint = await refreshRecordedTarget(result.targetMethod === "link");
-    } catch (targetError) {
-      result.cleanupPending = true;
-      result.cleanupWarning = "新位置文件与整理记录不一致，未自动删除原素材";
-      result.remainingSourcePath = cleanupPath;
-      return result;
-    }
-
-    try {
-      await assertContext(options.validate);
-      await cleanupWait(CLEANUP_SETTLING_MS);
-      var afterWaitFingerprint = fingerprintFromStat(await lstatForIdentity(fs, cleanupPath));
-      if (!sameStrongPathFingerprint(quarantinedFingerprint, afterWaitFingerprint)) {
-        throw new Error("待删除文件在稳定复核期间发生变化");
-      }
-      await assertTargetAndLinks({
-        fs: fs,
-        targetPath: options.targetPath,
-        targetFingerprint: cleanupTargetFingerprint,
-        projectItems: options.projectItems,
-        validate: options.validate,
-        wait: options.wait,
-        beforeDeleteDetails: {
-          id: options.id,
-          sourcePath: sourcePath,
-          cleanupPath: cleanupPath,
-          quarantinedFingerprint: afterWaitFingerprint,
-          targetMethod: result.targetMethod,
-        },
-      }, options.beforeDelete);
-      var cleanupBeforeDeleteFingerprint = fingerprintFromStat(await lstatForIdentity(fs, cleanupPath));
-      if (!sameStrongPathFingerprint(afterWaitFingerprint, cleanupBeforeDeleteFingerprint)) {
-        throw new Error("待删除文件在最终核验期间发生变化");
-      }
-      var targetBeforeCleanupUnlink = fingerprintFromStat(await lstatForIdentity(fs, options.targetPath));
-      if (!sameStrongPathFingerprint(cleanupTargetFingerprint, targetBeforeCleanupUnlink)) {
-        throw new Error("新位置文件在最终删除前发生变化");
-      }
-      var cleanupUnlinkResult = await fs.unlink(cleanupPath);
-      if (!successfulFsResult(cleanupUnlinkResult)) throw new Error("删除文件时返回了意外结果: " + cleanupUnlinkResult);
-      var targetAfterCleanupUnlink = fingerprintFromStat(await lstatForIdentity(fs, options.targetPath));
-      var cleanupTargetStillSame = result.targetMethod === "link"
-        ? sameHardLinkRecoveryFingerprint(targetBeforeCleanupUnlink, targetAfterCleanupUnlink)
-        : sameStrongPathFingerprint(targetBeforeCleanupUnlink, targetAfterCleanupUnlink);
-      if (!cleanupTargetStillSame) throw new Error("删除原位置后无法确认新位置仍是同一文件");
-      result.targetFingerprint = targetAfterCleanupUnlink;
-    } catch (cleanupError) {
-      var cleanupStillPresent = true;
-      try { cleanupStillPresent = await exists(fs, cleanupPath); } catch (cleanupInspectionError) {}
-      result.cleanupPending = true;
-      result.cleanupWarning = cleanupStillPresent
-        ? "待删除的原素材仍在，未自动删除"
-        : "原素材已移出，但删除后的新位置核验没有完成";
-      result.remainingSourcePath = cleanupStillPresent ? cleanupPath : "";
-      return result;
-    }
-
-    if (await exists(fs, sourcePath)) {
-      result.sourceChanged = true;
       result.remainingSourcePath = sourcePath;
-      result.cleanupWarning = "清理期间原路径出现了另一份文件，未触碰这份新文件";
+      if (Core.isProjectFile(sourcePath)) throw new Error("不能回收工程文件");
+      var sourceExists = await exists(options.fs, sourcePath);
+      var source = sourceExists ? fingerprintFromStat(await lstatForIdentity(options.fs, sourcePath)) : options.sourceFingerprint;
+      var sameSource = Core.samePath(sourcePath, options.sourcePath)
+        ? sameStrongPathFingerprint(options.sourceFingerprint, source)
+        : sameFileAfterRename(options.sourceFingerprint, source);
+      if (!sameSource && !(options.targetMethod === "link" && sameHardLinkRecoveryFingerprint(options.sourceFingerprint, source))) {
+        result.sourceChanged = true;
+        throw new Error("原文件身份已变化，未回收");
+      }
+      await assertContext(options.validate);
+      var details = { id: options.id, sourcePath: options.sourcePath, cleanupPath: sourcePath,
+        targetPath: options.targetPath, sourceFingerprint: source, targetFingerprint: options.targetFingerprint,
+        targetMethod: options.targetMethod, projectItems: options.projectItems || [] };
+      if (options.beforeSourceCleanup && await options.beforeSourceCleanup(details) === false) throw new Error("回收前工程引用核验未通过");
+      await (options.cleanupWait || options.wait || delay)(CLEANUP_SETTLING_MS);
+      await assertContext(options.validate);
+      await assertTargetAndLinks(Object.assign({}, options, { allowHardLinkCtimeChange: options.targetMethod === "link", beforeDeleteDetails: details }), options.beforeDelete);
+      if (sourceExists && !sameStrongPathFingerprint(source, fingerprintFromStat(await lstatForIdentity(options.fs, sourcePath)))) {
+        result.sourceChanged = true;
+        throw new Error("回收前原文件身份或内容已变化");
+      }
+      var receipt = await options.recycle({ id: options.id, path: sourcePath, targetPath: options.targetPath,
+        sourceFingerprint: source, targetFingerprint: options.targetFingerprint });
+      if (!receipt || receipt.status !== "recycled" || receipt.path !== sourcePath || !receipt.receiptId) throw new Error("回收结果未确认，保留事务记录");
+      if (await exists(options.fs, sourcePath)) throw new Error("原路径仍存在，回收结果需要核对");
+      var targetAfter = fingerprintFromStat(await lstatForIdentity(options.fs, options.targetPath));
+      if (!(options.targetMethod === "link" ? sameHardLinkRecoveryFingerprint(options.targetFingerprint, targetAfter)
+        : sameStrongPathFingerprint(options.targetFingerprint, targetAfter))) throw new Error("回收后目标身份核验失败");
+      result.targetFingerprint = targetAfter;
+      result.cleanupPending = false;
+      result.remainingSourcePath = "";
+      result.receipt = receipt;
+    } catch (error) {
+      result.cleanupWarning = "目标已就绪，原文件待回收：" + userSafeFailureDetail(error, "回收结果需要人工核对");
+      result.cleanupFailure = { code: String(error && error.code || ""),
+        win32Error: Number(error && error.win32Error) || 0, failureKind: String(error && error.failureKind || ""),
+        committed: Boolean(error && error.committed) };
     }
     return result;
   }

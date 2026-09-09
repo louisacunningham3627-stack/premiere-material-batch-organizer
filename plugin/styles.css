@@ -49,6 +49,10 @@ h1, h2, h3, p { margin: 0; }
 .topbar, .brand-lockup, .context-title, .state-main, .destination-heading, .review-heading, .activity-heading, .settings-toolbar, .protected-item-heading, .protected-actions { display: flex; align-items: center; }
 .topbar { justify-content: flex-start; min-height: 40px; margin-bottom: 10px; }
 .brand-lockup { min-width: 0; }
+.confirmation-page { padding: 16px; min-height: 100%; background: var(--surface-panel); }
+.confirmation-page p { white-space: pre-wrap; overflow-wrap: anywhere; margin: 16px 0; color: var(--text-secondary); line-height: 1.6; }
+.confirmation-page .button { display: block; width: 100%; margin-top: 12px; }
+body[data-confirmation="true"] #panelRoot, body[data-confirmation="true"] #settingsPage { display: none !important; }
 .brand-copy { min-width: 0; }
 h1 { font-size: 15px; font-weight: 650; line-height: 1.25; letter-spacing: 0; }
 .brand-copy p { overflow: hidden; margin-top: 2px; color: var(--text-tertiary); font-size: 11px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
@@ -130,6 +134,8 @@ button:focus-visible, input:focus-visible { outline: none; box-shadow: var(--foc
 .destination-path code { display: block; overflow: hidden; color: var(--text-primary); font: 600 12px/1.4 "Cascadia Mono", Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
 .batch-legacy-note { margin-top: 7px; color: var(--text-tertiary); font-size: 10px; line-height: 1.45; }
 .batch-legacy-note[hidden] { display: none !important; }
+.background-status { margin-top: 7px; color: var(--text-secondary); font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; word-break: break-all; }
+.background-status[hidden] { display: none !important; }
 .batch-summary { margin-top: 8px; color: var(--text-tertiary); font-size: 11px; line-height: 1.4; }
 .batch-summary strong { color: var(--text-secondary); font-weight: 650; font-variant-numeric: tabular-nums; }
 .batch-rail { display: none; height: 2px; margin: -2px 2px 0; overflow: hidden; background: var(--ink-700); }

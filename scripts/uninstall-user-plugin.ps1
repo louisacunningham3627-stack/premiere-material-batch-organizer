@@ -57,12 +57,41 @@ $runId = "{0}-{1}" -f (Get-Date -Format "yyyyMMdd-HHmmss"), ([guid]::NewGuid().T
 $backupPath = Join-Path $backupRoot ("{0}-uninstalled-{1}" -f $pluginId, $runId)
 
 New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null
-Move-Item -LiteralPath $targetPath -Destination $backupPath
+& (Join-Path $PSScriptRoot 'manage-material-service.ps1') -PluginPath $targetPath -Action Stop
+try {
+  & (Join-Path $PSScriptRoot 'manage-material-service.ps1') -PluginPath $targetPath -Action Unregister
+  Move-Item -LiteralPath $targetPath -Destination $backupPath
+} catch {
+  $uninstallError = $_
+  if ((Test-Path -LiteralPath $targetPath) -and [version]$manifest.version -ge [version]'0.2.6') {
+    try { & (Join-Path $PSScriptRoot 'manage-material-service.ps1') -PluginPath $targetPath -Action Start }
+    catch { throw "卸载失败：$($uninstallError.Exception.Message)；插件保留但助手恢复失败：$($_.Exception.Message)" }
+  }
+  throw $uninstallError
+}
+
+$schemePath = 'Software\Classes\hechao-material-recycle'
+$scheme = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($schemePath)
+$ownedProtocol = $false
+if ($null -ne $scheme) {
+  try {
+    $commandKey = $scheme.OpenSubKey('shell\open\command')
+    if ($null -ne $commandKey) {
+      try {
+        $expectedCommand = '"' + (Join-Path $targetPath 'native\windows\MaterialFileHelper.exe') + '" "%1"'
+        $ownedProtocol = $commandKey.GetValue('') -ceq $expectedCommand -and 'URL Protocol' -in $scheme.GetValueNames()
+      } finally { $commandKey.Dispose() }
+    }
+  } finally { $scheme.Dispose() }
+}
+if ($ownedProtocol) {
+  [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKeyTree($schemePath, $false)
+}
 
 [pscustomobject]@{
   状态 = "已卸载"
   插件标识 = $pluginId
   原安装路径 = $targetPath
   可恢复备份 = $backupPath
-  恢复命令 = "Move-Item -LiteralPath '$backupPath' -Destination '$targetPath'"
+  恢复说明 = "使用安装脚本并以此备份作为 BuildPath 重新安装，以恢复回收协议。回收凭据和历史记录仍保留。"
 }

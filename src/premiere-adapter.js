@@ -74,7 +74,7 @@
       for (var index = 0; index < items.length; index += 1) {
         var item = items[index];
         var itemId = "";
-        try { itemId = String(item.getId()); } catch (error) {}
+        try { itemId = String(await item.getId()); } catch (error) {}
         if (itemId && seenItemIds.has(itemId)) {
           warnings.push(
             "检测到重复的 Premiere 项目项 ID " + itemId +
@@ -139,12 +139,72 @@
     return Boolean(context && context.identity === expectedIdentity);
   }
 
+  async function verifyNoTimelineSourceReferences(ppro, project, sourcePath, cleanupPath) {
+    if (!project || typeof project.getSequences !== "function") throw new Error("无法读取全部序列，原素材保留");
+    var visited = new Set();
+    async function visit(sequence) {
+      if (!sequence || !sequence.guid) throw new Error("序列身份不完整，原素材保留");
+      var id = String(sequence.guid);
+      if (visited.has(id)) return;
+      visited.add(id);
+      for (var kind of ["Audio", "Video"]) {
+        var count = await sequence["get" + kind + "TrackCount"]();
+        if (!Number.isInteger(count) || count < 0) throw new Error("轨道列表不完整，原素材保留");
+        for (var index = 0; index < count; index += 1) {
+          var track = await sequence["get" + kind + "Track"](index);
+          var items = await track.getTrackItems(ppro.Constants.TrackItemType.CLIP, false);
+          if (!Array.isArray(items)) throw new Error("轨道素材列表不完整，原素材保留");
+          for (var item of items) {
+            var clip = await castClip(ppro, await item.getProjectItem());
+            if (!clip) throw new Error("轨道素材类型无法核对，原素材保留");
+            if (typeof clip.isMergedClip === "function" && await clip.isMergedClip()) throw new Error("存在无法展开核对的合并素材，原素材保留");
+            if (await clip.isSequence()) await visit(await clip.getSequence());
+            else {
+              var mediaPath = await clip.getMediaFilePath();
+              if (typeof mediaPath !== "string" || !mediaPath) throw new Error("轨道素材路径无法读取，原素材保留");
+              if (Core.samePath(mediaPath, sourcePath) || (cleanupPath && Core.samePath(mediaPath, cleanupPath))) throw new Error("时间线仍引用原位置，原素材未回收");
+            }
+          }
+        }
+      }
+    }
+    var sequences = await project.getSequences();
+    if (!Array.isArray(sequences)) throw new Error("序列列表无法完整读取，原素材保留");
+    for (var sequence of sequences) await visit(sequence);
+  }
+
+  async function previewPosition(ppro, project) {
+    var positions = [];
+    var unavailable = false;
+    try {
+      if (project && typeof project.getActiveSequence === "function") {
+        var sequence = await project.getActiveSequence();
+        if (sequence) {
+          var sequenceTime = await sequence.getPlayerPosition();
+          positions.push("sequence:" + String(sequence.guid) + ":" + String(sequenceTime.ticks));
+        }
+      }
+    } catch (error) { unavailable = true; }
+    try {
+      if (ppro.SourceMonitor && typeof ppro.SourceMonitor.getProjectItem === "function") {
+        var item = await ppro.SourceMonitor.getProjectItem();
+        if (item) {
+          var sourceTime = await ppro.SourceMonitor.getPosition();
+          positions.push("source:" + String(await item.getId()) + ":" + String(sourceTime.ticks));
+        }
+      }
+    } catch (error) { unavailable = true; }
+    return positions.length ? positions.join("|") : unavailable ? null : "";
+  }
+
   return {
     activeContext: activeContext,
     assertCompleteInventory: assertCompleteInventory,
     contextStillActive: contextStillActive,
     groupByMediaPath: groupByMediaPath,
     inventoryProject: inventoryProject,
+    verifyNoTimelineSourceReferences: verifyNoTimelineSourceReferences,
     projectIdentity: projectIdentity,
+    previewPosition: previewPosition,
   };
 });

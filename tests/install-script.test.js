@@ -65,7 +65,9 @@ function runInstallerScript(scriptPath, parameters, prelude = "") {
 }
 
 function temporaryDirectory(t) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "premiere-material-installer-"));
+  const testRoot = path.join(projectRoot, "work", "installer-tests");
+  fs.mkdirSync(testRoot, { recursive: true });
+  const directory = fs.mkdtempSync(path.join(testRoot, "premiere-material-installer-"));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   return directory;
 }
@@ -191,3 +193,28 @@ test("卸载时会拒绝移动伪装成当前插件目录的其他插件", { ski
   assert.equal(fs.existsSync(targetPath), true);
   assert.equal(fs.readFileSync(path.join(targetPath, "payload.txt"), "utf8"), "旧版");
 });
+
+for (const operation of ["install", "uninstall"]) {
+  test(`${operation} 移动旧插件失败后恢复已停止的助手`, { skip: process.platform !== "win32" }, (t) => {
+    const root = temporaryDirectory(t);
+    const targetRoot = path.join(root, "Adobe/UXP/Plugins/External");
+    const targetPath = createInstalledFixture(targetRoot);
+    fs.writeFileSync(path.join(targetPath, "manifest.json"), JSON.stringify({ id: manifest.id, version: "0.2.6", host: { app: "premierepro" } }));
+    const scriptDir = path.join(root, "scripts"); fs.mkdirSync(scriptDir);
+    const log = path.join(root, "service-actions.txt");
+    const script = path.join(scriptDir, `${operation}-user-plugin.ps1`);
+    fs.copyFileSync(operation === "install" ? installPath : uninstallPath, script);
+    fs.writeFileSync(path.join(scriptDir, "manage-material-service.ps1"),
+      `\uFEFFparam([string]$PluginPath,[string]$Action)\n[IO.File]::AppendAllText(${quotePowerShell(log)}, $Action + [Environment]::NewLine)\n`);
+    const prelude = `function Move-Item { param([string]$LiteralPath,[string]$Destination)\n` +
+      `if ($LiteralPath -eq ${quotePowerShell(targetPath)}) { throw 'simulated directory lock' }\n` +
+      `Microsoft.PowerShell.Management\\Move-Item -LiteralPath $LiteralPath -Destination $Destination\n}`;
+    const parameters = { TargetRoot: targetRoot };
+    if (operation === "install") parameters.BuildPath = createBuildFixture(root);
+    const result = runInstallerScript(script, parameters, prelude);
+    assert.notEqual(result.status, 0);
+    assert.equal(fs.readFileSync(path.join(targetPath, "payload.txt"), "utf8"), "旧版");
+    assert.ok(fs.existsSync(log), result.stderr || result.stdout);
+    assert.deepEqual(fs.readFileSync(log, "utf8").trim().split(/\r?\n/), operation === "install" ? ["Stop", "Start"] : ["Stop", "Unregister", "Start"]);
+  });
+}

@@ -15,6 +15,8 @@ const mainSource = fs.readFileSync(require.resolve("../src/main.js"), "utf8");
 const MACHINE_SETTINGS_V1_KEY = "hechao.material-batch-organizer.machine.v1";
 const MACHINE_SETTINGS_V2_KEY = "hechao.material-batch-organizer.machine.v2";
 
+function workspaceSettingKey(projectPath) { return "workspace:" + State.projectKey(Core.workspaceRootForProject(projectPath)); }
+
 function deferred() {
   let resolve;
   const promise = new Promise((nextResolve) => { resolve = nextResolve; });
@@ -174,6 +176,9 @@ function createSettingsGuardHarness() {
     },
     shell: { async openPath() {} },
   };
+  uxp.storage = uxp.storage || {};
+  uxp.storage.localFileSystem = uxp.storage.localFileSystem || {};
+  uxp.storage.localFileSystem.getPluginFolder = async () => ({ nativePath: "E:\\test-plugin" });
   const sandbox = {
     console,
     document,
@@ -183,6 +188,9 @@ function createSettingsGuardHarness() {
     clearTimeout,
     setInterval,
     clearInterval,
+    MaterialBatchFileService: require("../src/file-service"),
+    MaterialBatchRecycleBridge: { create: () => ({ revealDirectory: async (path, label) => { const result = await uxp.shell.openPath(path, label); if (result) throw new Error(String(result)); }, checkAvailability: async () => ({ status: "available" }) }) },
+    MaterialBatchConfirmation: { create: () => ({ request: async message => typeof window.confirm === "function" ? window.confirm(message) : false, cancel() {} }) },
     MaterialBatchCore: Core,
     MaterialBatchState: State,
     MaterialBatchTransaction: Transaction,
@@ -233,6 +241,7 @@ function createProtectedFolderHarness(folderError, localSettingsError, stateWrit
   const stateDescription = testElement();
   const autoCollectToggle = testElement();
   const folderActionMessage = testElement();
+  const backgroundStatus = testElement();
   const openBatchButton = testElement();
   const protectedListCount = testElement();
   const protectedCountText = testElement();
@@ -286,6 +295,7 @@ function createProtectedFolderHarness(folderError, localSettingsError, stateWrit
     ["stateDescription", stateDescription],
     ["autoCollectToggle", autoCollectToggle],
     ["folderActionMessage", folderActionMessage],
+    ["backgroundStatus", backgroundStatus],
     ["openBatchButton", openBatchButton],
     ["protectedListCount", protectedListCount],
     ["protectedCountText", protectedCountText],
@@ -385,6 +395,10 @@ function createProtectedFolderHarness(folderError, localSettingsError, stateWrit
       fsMutationCalls.push(["copyFile", from, to]);
       if (typeof harnessOptions.onCopyFile === "function") await harnessOptions.onCopyFile(from, to);
     },
+    async writeFile(nativePath, content) {
+      fsMutationCalls.push(["writeFile", nativePath]);
+      if (harnessOptions.onWriteFile) await harnessOptions.onWriteFile(nativePath, content);
+    },
   };
   const storage = {
     MISSING_REVISION: null,
@@ -469,6 +483,9 @@ function createProtectedFolderHarness(folderError, localSettingsError, stateWrit
       },
     },
   };
+  uxp.storage = uxp.storage || {};
+  uxp.storage.localFileSystem = uxp.storage.localFileSystem || {};
+  uxp.storage.localFileSystem.getPluginFolder = async () => ({ nativePath: "E:\\test-plugin" });
   const sandbox = {
     console: {
       error(...values) { diagnostics.push(values.map(String).join(" ")); },
@@ -478,12 +495,18 @@ function createProtectedFolderHarness(folderError, localSettingsError, stateWrit
     document,
     window,
     localStorage,
-    setTimeout,
-    clearTimeout,
+    setTimeout: harnessOptions.setTimeout || setTimeout,
+    clearTimeout: harnessOptions.clearTimeout || clearTimeout,
     setInterval,
     clearInterval,
+    MaterialBatchConfirmation: { create: () => ({ request: async message => typeof window.confirm === "function" ? window.confirm(message) : false, cancel() {} }) },
     MaterialBatchCore: Core,
     MaterialBatchState: harnessOptions.stateModule || State,
+    MaterialBatchFileService: harnessOptions.fileService || require("../src/file-service"),
+    MaterialBatchRecycleBridge: harnessOptions.recycleBridge || { create: () => ({ revealDirectory: async (path, label) => { const result = await uxp.shell.openPath(path, label); if (result) throw new Error(String(result)); }, checkAvailability: async () => {
+      if (harnessOptions.recycleProbeError) throw harnessOptions.recycleProbeError;
+      return { status: "available" };
+    } }) },
     MaterialBatchTransaction: harnessOptions.transaction || Transaction,
     MaterialBatchRecovery: Recovery,
     MaterialBatchCoordination: Coordination,
@@ -503,6 +526,7 @@ function createProtectedFolderHarness(folderError, localSettingsError, stateWrit
         };
       },
       assertCompleteInventory() {},
+      previewPosition: harnessOptions.previewPosition,
       groupByMediaPath(entries) {
         if (typeof harnessOptions.groupByMediaPath === "function") return harnessOptions.groupByMediaPath(entries);
         const groups = new Map();
@@ -524,7 +548,7 @@ function createProtectedFolderHarness(folderError, localSettingsError, stateWrit
     MaterialBatchScanPolicy: harnessOptions.scanPolicy || ScanPolicy,
     require(name) {
       if (name === "uxp") return uxp;
-      if (name === "premierepro") return { Constants: {}, ProjectEvent: {}, EventManager: {} };
+      if (name === "premierepro") return harnessOptions.ppro || { Constants: {}, ProjectEvent: {}, EventManager: {} };
       if (name === "fs") return fsMock;
       throw new Error(`unexpected require: ${name}`);
     },
@@ -541,6 +565,7 @@ function createProtectedFolderHarness(folderError, localSettingsError, stateWrit
     entrypoints,
     finishButton,
     folderActionMessage,
+    backgroundStatus,
     confirmMessages,
     diagnostics,
     fileCount,
@@ -673,6 +698,9 @@ function createHarness() {
     EventManager: {},
   };
 
+  uxp.storage = uxp.storage || {};
+  uxp.storage.localFileSystem = uxp.storage.localFileSystem || {};
+  uxp.storage.localFileSystem.getPluginFolder = async () => ({ nativePath: "E:\\test-plugin" });
   const sandbox = {
     console,
     document,
@@ -682,6 +710,9 @@ function createHarness() {
     clearTimeout,
     setInterval,
     clearInterval,
+    MaterialBatchFileService: require("../src/file-service"),
+    MaterialBatchRecycleBridge: { create: () => ({ revealDirectory: async (path, label) => { const result = await uxp.shell.openPath(path, label); if (result) throw new Error(String(result)); }, checkAvailability: async () => ({ status: "available" }) }) },
+    MaterialBatchConfirmation: { create: () => ({ request: async message => typeof window.confirm === "function" ? window.confirm(message) : false, cancel() {} }) },
     MaterialBatchCore: Core,
     MaterialBatchState: State,
     MaterialBatchTransaction: Transaction,
@@ -853,10 +884,10 @@ function createMappingHarness(options = {}) {
       MACHINE_SETTINGS_V2_KEY,
       JSON.stringify({
         schemaVersion: 2,
-        autoByProject: { [State.projectKey(projectPath)]: options.autoEnabled !== false },
-        projectSetupByProject: { [State.projectKey(projectPath)]: true },
+        autoByProject: { [workspaceSettingKey(projectPath)]: options.autoEnabled !== false },
+        projectSetupByProject: { [workspaceSettingKey(projectPath)]: true },
         protectedRevisionByProject: {
-          [State.projectKey(projectPath)]: Math.max(1, Number(state.protectedConfigRevision) || 1),
+          [workspaceSettingKey(projectPath)]: Math.max(1, Number(state.protectedConfigRevision) || 1),
         },
         protectedMappings: [],
       }),
@@ -899,6 +930,9 @@ function createMappingHarness(options = {}) {
       return { targetPath: options.targetPath, itemCount: options.projectItems.length };
     },
   });
+  uxp.storage = uxp.storage || {};
+  uxp.storage.localFileSystem = uxp.storage.localFileSystem || {};
+  uxp.storage.localFileSystem.getPluginFolder = async () => ({ nativePath: "E:\\test-plugin" });
   const sandbox = {
     console,
     document,
@@ -908,6 +942,9 @@ function createMappingHarness(options = {}) {
     clearTimeout,
     setInterval,
     clearInterval,
+    MaterialBatchFileService: require("../src/file-service"),
+    MaterialBatchRecycleBridge: { create: () => ({ revealDirectory: async (path, label) => { const result = await uxp.shell.openPath(path, label); if (result) throw new Error(String(result)); }, checkAvailability: async () => ({ status: "available" }) }) },
+    MaterialBatchConfirmation: { create: () => ({ request: async message => typeof window.confirm === "function" ? window.confirm(message) : false, cancel() {} }) },
     MaterialBatchCore: Core,
     MaterialBatchState: State,
     MaterialBatchTransaction: transaction,
@@ -1061,6 +1098,9 @@ function createRecoveryRaceHarness() {
     shell: { async openPath() {} },
   };
   const ppro = { Constants: {}, ProjectEvent: {}, EventManager: {} };
+  uxp.storage = uxp.storage || {};
+  uxp.storage.localFileSystem = uxp.storage.localFileSystem || {};
+  uxp.storage.localFileSystem.getPluginFolder = async () => ({ nativePath: "E:\\test-plugin" });
   const sandbox = {
     console,
     document,
@@ -1070,6 +1110,9 @@ function createRecoveryRaceHarness() {
     clearTimeout,
     setInterval,
     clearInterval,
+    MaterialBatchFileService: require("../src/file-service"),
+    MaterialBatchRecycleBridge: { create: () => ({ revealDirectory: async (path, label) => { const result = await uxp.shell.openPath(path, label); if (result) throw new Error(String(result)); }, checkAvailability: async () => ({ status: "available" }) }) },
+    MaterialBatchConfirmation: { create: () => ({ request: async message => typeof window.confirm === "function" ? window.confirm(message) : false, cancel() {} }) },
     MaterialBatchCore: Core,
     MaterialBatchState: State,
     MaterialBatchTransaction: Transaction,
@@ -1372,6 +1415,7 @@ function createOrdinarySafetyFixture(options = {}) {
     initialState: state,
     initialMachineSettings: projectMachineSettings(state, projectPath),
     localSettingsError: options.localSettingsError,
+    recycleProbeError: options.recycleProbeError,
     localSettingsErrorAt: options.localSettingsErrorAt,
     sharedLocalStorage: options.sharedLocalStorage,
     inventoryEntries,
@@ -1402,6 +1446,359 @@ function createOrdinarySafetyFixture(options = {}) {
     get projectSaveCalls() { return projectSaveCalls; },
   };
 }
+
+function backgroundCleanupFixture(options = {}) {
+  const root = "E:\\后台整理测试";
+  let saves = 0, recycleCalls = 0, copies = 0, queryCalls = 0;
+  let locked = options.locked !== false, live = true;
+  const context = projectContext(root, "后台.prproj", { async save() {
+    saves++;
+    files.get(context.projectPath).mtimeMs += 1;
+    if (options.onSave) return options.onSave(saves);
+    return true;
+  } });
+  const files = new Map();
+  files.set(context.projectPath, { size: 300, mtimeMs: 1000, ctimeMs: 1000, birthtimeMs: 900, dev: "2", ino: "999" });
+  const clips = (options.names || ["a.gif", "b.wav"]).map((name, i) => {
+    const mediaPath = "C:\\Downloads\\" + name;
+    files.set(mediaPath, { size: 100, mtimeMs: 1000, ctimeMs: 1000, birthtimeMs: 900, dev: "1", ino: String(100 + i) });
+    return { name, mediaPath, async canChangeMediaPath() { return true; },
+      async changeMediaFilePath(p) { this.mediaPath = p; return true; }, async refreshMedia() {},
+      async getMediaFilePath() { return this.mediaPath; }, async isOffline() { return false; } };
+  });
+  let state = State.createState(root);
+  state.initialized = true;
+  state = State.registerProject(state, context.projectPath, context.projectName);
+  const stateStore = { value: state };
+  const sharedLocalStorage = createSharedLocalStorage([[MACHINE_SETTINGS_V2_KEY, JSON.stringify(projectMachineSettings(state, context.projectPath))]]);
+  const results = new Map();
+  const bridge = { create: opts => ({
+    async checkAvailability() { return { status: "available" }; },
+    async query(request) { queryCalls++; return options.queryResult || { state: "result", value: results.get(request.id) }; },
+    async revealDirectory() {},
+    async recycle(request) {
+      recycleCalls++;
+      if (options.onRecycle) await options.onRecycle(request);
+      if (locked && request.path.endsWith("a.gif")) {
+        const result = { status: "failed", message: "原素材暂时被占用，释放后自动继续", failureKind: options.failureKind || "busy", win32Error: options.win32Error || 32 };
+        results.set(request.id, result);
+        throw Object.assign(new Error(result.message), result, { code: "MATERIAL_RECYCLE_FAILED", committed: false });
+      }
+      await opts.beforeCommit({ jobId: request.id, issuedPath: request.statePath + ".issued" });
+      files.delete(request.path);
+      const result = { id: request.id, status: "recycled", path: request.path, receiptId: "d".repeat(64) };
+      results.set(request.id, result);
+      return result;
+    },
+  }) };
+  const makeHarness = (overrides = {}) => createProtectedFolderHarness(null, null, null, {
+    context, stateStore, sharedLocalStorage, recycleBridge: bridge,
+    contextStillActive() { return live; },
+    fileService: { ...require("../src/file-service"), async compareFiles({ sourcePath, targetPath }) {
+      return { sourceFingerprint: { ...files.get(sourcePath), sha256: "c".repeat(64) },
+        targetFingerprint: { ...files.get(targetPath), sha256: "c".repeat(64) } };
+    } },
+    transaction: { ...Transaction,
+      moveAndRelink: opts => Transaction.moveAndRelink({ ...opts, wait: async () => {}, cleanupWait: async () => {} }),
+      cleanupVerifiedSource: opts => Transaction.cleanupVerifiedSource({ ...opts, wait: async () => {}, cleanupWait: async () => {} }),
+    },
+    scanPolicy: { ...ScanPolicy, createStabilityTracker: () => ({ observe: () => ({ ready: true }), retain() {}, forget() {}, clear() {} }) },
+    inventoryEntries: () => clips.map((clip, i) => ({ itemId: "clip-" + i, itemName: clip.name, mediaPath: clip.mediaPath, clip })),
+    lstatResultForPath(p) {
+      if (files.has(p)) return { ...files.get(p), isFile: () => true, isDirectory: () => false };
+      if (p.startsWith(root) && !/\.[^\\]+$/.test(p)) return { isFile: () => false, isDirectory: () => true, dev: "2" };
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    },
+    onCopyFile(from, to) { copies++; files.set(to, { ...files.get(from), dev: "2", ino: String(1000 + copies) }); },
+    ...overrides,
+  });
+  return { makeHarness, files, clips, results, stateStore, sharedLocalStorage, context,
+    release() { locked = false; }, switchAway() { live = false; },
+    due() { stateStore.value.deferredTransactions[0].backgroundTask.nextAttemptAt = new Date(0).toISOString(); },
+    get saves() { return saves; }, get copies() { return copies; }, get recycleCalls() { return recycleCalls; }, get queryCalls() { return queryCalls; } };
+}
+
+test("一个原件占用不挡后续素材，等待记录跨重开自动收尾且不再次复制或确认", async () => {
+  const f = backgroundCleanupFixture();
+  let h = f.makeHarness();
+  await h.entrypoints.show();
+  try {
+    assert.equal(h.latestState.pendingTransaction, null, h.diagnostics.join("\n"));
+    assert.equal(h.latestState.deferredTransactions.length, 1);
+    assert.equal(h.latestState.deferredTransactions[0].backgroundTask.kind, "cleanup");
+    assert.equal(h.latestState.transactions.length, 1);
+    assert.equal(f.files.has("C:\\Downloads\\a.gif"), true);
+    assert.equal(f.files.has("C:\\Downloads\\b.wav"), false);
+    assert.equal(h.autoCollectToggle.checked, true);
+    assert.equal(h.autoCollectToggle.disabled, false);
+    assert.equal(h.document.body.dataset.recovery, "false");
+    assert.equal(h.openBatchButton.disabled, false);
+    assert.match(h.backgroundStatus.textContent, /1 项等待原件释放/);
+    assert.equal(h.confirmMessages.length, 0);
+    assert.equal(f.copies, 2);
+    h.entrypoints.hide();
+    f.release(); f.due();
+    h = f.makeHarness(); await h.entrypoints.show();
+    assert.equal(h.latestState.pendingTransaction, null, h.diagnostics.join("\n"));
+    assert.equal(h.latestState.deferredTransactions.length, 0, h.diagnostics.join("\n"));
+    assert.equal(h.latestState.transactions.length, 2);
+    assert.equal(f.files.has("C:\\Downloads\\a.gif"), false);
+    assert.equal(f.copies, 2);
+    assert.equal(h.confirmMessages.length, 0);
+    assert.equal(h.document.body.dataset.recovery, "false");
+    assert.equal(h.backgroundStatus.hidden, true);
+  } finally { h.entrypoints.hide(); }
+});
+
+test("原件持续占用按到期时间退避，不每次扫描重复回收", async () => {
+  const f = backgroundCleanupFixture();
+  let h = f.makeHarness(); await h.entrypoints.show(); h.entrypoints.hide();
+  const calls = f.recycleCalls;
+  h = f.makeHarness(); await h.entrypoints.show(); h.entrypoints.hide();
+  assert.equal(f.recycleCalls, calls);
+  f.due(); h = f.makeHarness(); await h.entrypoints.show();
+  try {
+    assert.equal(f.recycleCalls, calls + 1);
+    assert.equal(h.latestState.deferredTransactions[0].backgroundTask.attempts, 3);
+    assert.equal(h.latestState.deferredTransactions[0].recycleAttempts.length, 2);
+    assert.equal(h.autoCollectToggle.checked, true);
+    assert.equal(h.confirmMessages.length, 0);
+  } finally { h.entrypoints.hide(); }
+});
+
+test("暂停后不自动清理等待项，普通权限错误只暂缓且不进入忙碌重试", async () => {
+  const f = backgroundCleanupFixture({ failureKind: "permission", win32Error: 5 });
+  let h = f.makeHarness(); await h.entrypoints.show(); h.entrypoints.hide();
+  assert.equal(h.latestState.deferredTransactions[0].backgroundTask.kind, "held");
+  const calls = f.recycleCalls; f.due();
+  h = f.makeHarness(); await h.entrypoints.show(); h.entrypoints.hide();
+  assert.equal(f.recycleCalls, calls);
+  h.latestState.deferredTransactions[0].backgroundTask.kind = "cleanup";
+  f.stateStore.value.deferredTransactions[0].backgroundTask.kind = "cleanup";
+  const settings = JSON.parse(f.sharedLocalStorage.getItem(MACHINE_SETTINGS_V2_KEY));
+  settings.autoByProject[workspaceSettingKey(f.context.projectPath)] = false;
+  f.sharedLocalStorage.setItem(MACHINE_SETTINGS_V2_KEY, JSON.stringify(settings));
+  h = f.makeHarness(); await h.entrypoints.show();
+  try { assert.equal(f.recycleCalls, calls); assert.equal(h.autoCollectToggle.checked, false); }
+  finally { h.entrypoints.hide(); }
+});
+
+test("回收结果未知不能放入后台队列让下一个素材绕过", async () => {
+  const f = backgroundCleanupFixture({ queryResult: { state: "commit", value: {} } });
+  const h = f.makeHarness(); await h.entrypoints.show();
+  try {
+    assert.equal(h.latestState.deferredTransactions.length, 1, "另一项已备妥但未回收，记录必须保留");
+    assert.ok(h.latestState.pendingTransaction.recycleRequest);
+    assert.equal(f.files.has("C:\\Downloads\\b.wav"), true);
+    assert.equal(h.autoCollectToggle.checked, false);
+  } finally { h.entrypoints.hide(); }
+});
+
+test("旧版已认证回收失败可自动接入等待队列，不需要再点检查", async () => {
+  const f = backgroundCleanupFixture();
+  let h = f.makeHarness(); await h.entrypoints.show(); h.entrypoints.hide();
+  const old = f.stateStore.value.deferredTransactions.shift();
+  old.recycleRequest = old.recycleAttempts[0].request;
+  old.recycleAttempts = [];
+  delete old.backgroundTask;
+  f.stateStore.value.pendingTransaction = old;
+  f.results.set(old.recycleRequest.id, { status: "failed", message: "无法独占原素材的改名权限，原文件保留" });
+  const settings = JSON.parse(f.sharedLocalStorage.getItem(MACHINE_SETTINGS_V2_KEY));
+  settings.autoByProject[workspaceSettingKey(f.context.projectPath)] = false;
+  f.sharedLocalStorage.setItem(MACHINE_SETTINGS_V2_KEY, JSON.stringify(settings));
+  h = f.makeHarness(); await h.entrypoints.show();
+  try {
+    assert.equal(h.latestState.pendingTransaction, null);
+    assert.equal(h.latestState.deferredTransactions[0].backgroundTask.kind, "cleanup");
+    assert.equal(h.autoCollectToggle.checked, true);
+    assert.equal(h.confirmMessages.length, 0);
+    assert.equal(f.copies, 2);
+  } finally { h.entrypoints.hide(); }
+});
+
+test("等待记录写入失败保留当前事务并停全队列，不处理下一文件", async () => {
+  const f = backgroundCleanupFixture();
+  const h = f.makeHarness({ stateWriteResult(_count, state) {
+    if (state.deferredTransactions.length) throw Object.assign(new Error("等待记录写失败"), { code: "MATERIAL_BATCH_STORAGE_CONFLICT" });
+  } });
+  await h.entrypoints.show();
+  try {
+    assert.equal(f.recycleCalls, 0, "批次尚未统一保存，不能回收原件");
+    assert.equal(f.files.has("C:\\Downloads\\b.wav"), true);
+    assert.equal(h.autoCollectToggle.checked, false);
+    assert.equal(h.confirmMessages.length, 0);
+  } finally { h.entrypoints.hide(); }
+});
+
+test("后台重存工程失败保留原件，不会继续回收", async () => {
+  const f = backgroundCleanupFixture({ onSave: calls => calls < 2 });
+  let h = f.makeHarness(); await h.entrypoints.show(); h.entrypoints.hide(); f.due(); f.release();
+  const calls = f.recycleCalls;
+  h = f.makeHarness(); await h.entrypoints.show();
+  try {
+    assert.equal(f.recycleCalls, calls);
+    assert.equal(f.files.has("C:\\Downloads\\a.gif"), true);
+    assert.ok(h.latestState.pendingTransaction);
+    assert.equal(h.autoCollectToggle.checked, false);
+  } finally { h.entrypoints.hide(); }
+});
+
+test("后台保存时切换工程或关闭面板不能回收原件", async () => {
+  for (const action of ["switch", "hide"]) {
+    let h;
+    const f = backgroundCleanupFixture({ onSave: calls => {
+      if (calls === 2) { if (action === "switch") f.switchAway(); else h.entrypoints.hide(); }
+      return true;
+    } });
+    h = f.makeHarness(); await h.entrypoints.show(); h.entrypoints.hide(); f.due(); f.release();
+    const calls = f.recycleCalls;
+    h = f.makeHarness(); await h.entrypoints.show();
+    try {
+      assert.equal(f.recycleCalls, calls);
+      assert.equal(f.files.has("C:\\Downloads\\a.gif"), true);
+      assert.ok(h.latestState.pendingTransaction);
+      assert.equal(h.confirmMessages.length, 0);
+    } finally { h.entrypoints.hide(); }
+  }
+});
+
+test("后台继续前目标被替换只保留此项，不复制、不回收、不弹确认", async () => {
+  const f = backgroundCleanupFixture();
+  let h = f.makeHarness(); await h.entrypoints.show(); h.entrypoints.hide();
+  f.due(); f.release();
+  f.files.get(f.clips[0].mediaPath).ino = "replacement";
+  const calls = f.recycleCalls;
+  h = f.makeHarness(); await h.entrypoints.show();
+  try {
+    assert.equal(f.recycleCalls, calls);
+    assert.equal(f.copies, 2);
+    assert.equal(h.latestState.deferredTransactions[0].backgroundTask.kind, "held");
+    assert.equal(h.latestState.pendingTransaction, null);
+    assert.equal(h.confirmMessages.length, 0);
+    assert.equal(h.autoCollectToggle.checked, true);
+  } finally { h.entrypoints.hide(); }
+});
+
+test("一轮十二项新增素材只保存一次，全部完成且不重复复制", async () => {
+  const f = backgroundCleanupFixture({ locked: false, names: Array.from({ length: 12 }, (_, i) => `声音-${i}.wav`) });
+  const h = f.makeHarness();
+  await h.entrypoints.show();
+  try {
+    assert.equal(f.saves, 1, h.diagnostics.join("\n"));
+    assert.equal(f.copies, 12);
+    assert.equal(f.recycleCalls, 12);
+    assert.equal(h.latestState.transactions.length, 12);
+    assert.equal(h.latestState.deferredTransactions.length, 0);
+  } finally { h.entrypoints.hide(); }
+});
+
+test("同会话锁冲突重试复用已保存工程，工程磁盘变化后才再保存", async () => {
+  const f = backgroundCleanupFixture();
+  const h = f.makeHarness(); await h.entrypoints.show();
+  try {
+    assert.equal(f.saves, 1);
+    for (let i = 0; i < 3; i++) {
+      f.due(); h.window.listeners.get("batch-collector:refresh")(); await settle();
+      assert.equal(f.saves, 1, "没有改链或工程磁盘变化，不能重存");
+    }
+    f.files.get(f.context.projectPath).mtimeMs += 10;
+    f.due(); f.release(); h.window.listeners.get("batch-collector:refresh")(); await settle();
+    assert.equal(f.saves, 2);
+    assert.equal(h.latestState.transactions.length, 2);
+  } finally { h.entrypoints.hide(); }
+});
+
+test("批量保存失败只尝试一次，所有原件与待保存记录保留", async () => {
+  const f = backgroundCleanupFixture({ locked: false, onSave: () => false });
+  const h = f.makeHarness(); await h.entrypoints.show();
+  try {
+    assert.equal(f.saves, 1);
+    assert.equal(f.recycleCalls, 0);
+    assert.equal(f.files.has("C:\\Downloads\\a.gif"), true);
+    assert.equal(f.files.has("C:\\Downloads\\b.wav"), true);
+    assert.ok(h.latestState.pendingTransaction);
+    assert.equal(h.latestState.deferredTransactions.length, 1);
+    assert.equal(h.autoCollectToggle.checked, false);
+  } finally { h.entrypoints.hide(); }
+});
+
+function monitorTimers() {
+  const timers = new Map();
+  return { timers,
+    setTimeout(fn, ms) {
+      if ([1200, 2600, 10000].includes(ms)) { const key = {}; timers.set(key, { fn, ms }); return key; }
+      return setTimeout(fn, ms);
+    },
+    clearTimeout(key) { if (!timers.delete(key)) clearTimeout(key); },
+    async fire(ms) {
+      const next = [...timers].find(([, value]) => value.ms === ms);
+      assert.ok(next, `找不到 ${ms}ms 定时器`);
+      timers.delete(next[0]); next[1].fn(); await settle();
+    },
+  };
+}
+
+test("重复自动检查不闪烁、不重建列表、不保存工程", async () => {
+  const timers = monitorTimers();
+  const f = backgroundCleanupFixture({ locked: false });
+  const h = f.makeHarness(timers); await h.entrypoints.show();
+  try {
+    await timers.fire(10000);
+    const writes = [];
+    h.document.body.dataset = new Proxy(h.document.body.dataset, { set(obj, key, value) { writes.push([key, value]); obj[key] = value; return true; } });
+    const row = h.protectedList.firstChild;
+    for (let i = 0; i < 3; i++) await timers.fire(10000);
+    assert.deepEqual(writes, []);
+    assert.equal(h.protectedList.firstChild, row);
+    assert.equal(f.saves, 1);
+  } finally { h.entrypoints.hide(); }
+});
+
+test("连续导入事件只排一轮检查，剪辑和保存DIRTY事件不连锁触发", async () => {
+  const timers = monitorTimers();
+  let onImport, onDirty;
+  const f = backgroundCleanupFixture({ locked: false });
+  const h = f.makeHarness({ ...timers, ppro: { Constants: { OperationCompleteEvent: { IMPORT_MEDIA_COMPLETE: "import" } },
+    ProjectEvent: { EVENT_DIRTY: "dirty" }, EventManager: {
+      addGlobalEventListener(_name, fn) { onImport = fn; }, removeGlobalEventListener() {},
+      addEventListener(_target, _name, fn) { onDirty = fn; }, removeEventListener() {},
+    } } });
+  await h.entrypoints.show();
+  try {
+    for (let i = 0; i < 30; i++) onDirty();
+    assert.equal([...timers.timers.values()].filter(t => t.ms === 1200).length, 0);
+    for (let i = 0; i < 30; i++) onImport();
+    assert.equal([...timers.timers.values()].filter(t => t.ms === 1200).length, 1);
+    const before = h.inventoryCount;
+    await timers.fire(1200);
+    assert.equal(h.inventoryCount, before + 1);
+    assert.equal(f.saves, 1);
+  } finally { h.entrypoints.hide(); }
+});
+
+test("宿主预览接口暂时不可读不把普通整理永久卡住", async () => {
+  const f = backgroundCleanupFixture({ locked: false });
+  const h = f.makeHarness({ previewPosition: async () => null });
+  await h.entrypoints.show();
+  try { assert.equal(f.saves, 1); assert.equal(h.latestState.transactions.length, 2); }
+  finally { h.entrypoints.hide(); }
+});
+
+test("正在预览时自动轮询不枚举素材、不搬运或保存", async () => {
+  const timers = monitorTimers();
+  let position = 0;
+  const f = backgroundCleanupFixture({ locked: false });
+  const h = f.makeHarness({ ...timers, previewPosition: async () => String(position++) });
+  await h.entrypoints.show();
+  try {
+    const before = h.inventoryCount;
+    await timers.fire(10000);
+    await new Promise(resolve => setTimeout(resolve, 220)); await settle();
+    assert.equal(h.inventoryCount, before);
+    assert.equal(f.saves, 0, "预览中本轮已备妥的素材也不能强行保存");
+    assert.equal(f.recycleCalls, 0);
+  } finally { h.entrypoints.hide(); }
+});
 
 async function settle() {
   await new Promise((resolve) => setImmediate(resolve));
@@ -1437,7 +1834,7 @@ function readableFile(size, mtimeMs) {
 }
 
 function projectMachineSettings(state, projectPath, options = {}) {
-  const projectKey = State.projectKey(projectPath);
+  const projectKey = workspaceSettingKey(projectPath);
   const projectSetup = options.projectSetup !== false;
   const protectionConfirmed = options.protection !== false;
   return {
@@ -1792,12 +2189,12 @@ test("首次开启时已有的外部普通素材会进入待整理，不会被 b
     );
     assert.equal(
       JSON.parse(harness.localStorage.values.get(MACHINE_SETTINGS_V2_KEY))
-        .autoByProject[State.projectKey("E:\\项目\\测试工程.prproj")],
+        .autoByProject[workspaceSettingKey("E:\\项目\\测试工程.prproj")],
       true,
     );
     assert.equal(
       JSON.parse(harness.localStorage.values.get(MACHINE_SETTINGS_V2_KEY))
-        .projectSetupByProject[State.projectKey("E:\\项目\\测试工程.prproj")],
+        .projectSetupByProject[workspaceSettingKey("E:\\项目\\测试工程.prproj")],
       true,
     );
     assert.match(harness.stateTitle.textContent, /等待 1 个文件写完/);
@@ -1812,7 +2209,7 @@ test("首次开启时已有的外部普通素材会进入待整理，不会被 b
   }
 });
 
-test("同目录第二个工程不会继承旧的工作区自动开关，也不会在首次显示时自动补链", async () => {
+test("同目录第二个工程共用目录授权，但未核验的映射仍不能盲目补链", async () => {
   const workspaceRoot = "E:\\项目";
   const firstContext = projectContext(workspaceRoot, "第一版.prproj");
   let saveCalls = 0;
@@ -1858,10 +2255,10 @@ test("同目录第二个工程不会继承旧的工作区自动开关，也不�
     initialState,
     initialMachineSettings: {
       schemaVersion: 2,
-      autoByProject: { [State.projectKey(firstContext.projectPath)]: true },
-      projectSetupByProject: { [State.projectKey(firstContext.projectPath)]: true },
+      autoByProject: { [workspaceSettingKey(firstContext.projectPath)]: true },
+      projectSetupByProject: { [workspaceSettingKey(firstContext.projectPath)]: true },
       protectedRevisionByProject: {
-        [State.projectKey(firstContext.projectPath)]: initialState.protectedConfigRevision,
+        [workspaceSettingKey(firstContext.projectPath)]: initialState.protectedConfigRevision,
       },
       protectedMappings: [],
     },
@@ -1883,12 +2280,11 @@ test("同目录第二个工程不会继承旧的工作区自动开关，也不�
   await harness.entrypoints.show();
   try {
     const visibleState = harness.stateTitle.textContent + " " + harness.stateDescription.textContent;
-    assert.equal(harness.autoCollectToggle.checked, false);
-    assert.match(visibleState, /先设置不搬动文件夹/);
-    assert.equal(harness.document.body.dataset.onboarding, "protection");
-    assert.equal(relinkCalls, 0, "第二个工程未显式启用前不能自动补链");
-    assert.equal(saveCalls, 0, "第二个工程未显式启用前不能触发工程保存");
-    assert.deepEqual(harness.fsMutationCalls, []);
+    assert.equal(harness.autoCollectToggle.checked, true);
+    assert.doesNotMatch(visibleState, /先设置不搬动文件夹/);
+    assert.notEqual(harness.document.body.dataset.onboarding, "protection");
+    assert.equal(relinkCalls, 0, "未核验的映射不能自动补链");
+    assert.equal(saveCalls, 0, "未核验的映射不能触发工程保存");
   } finally {
     harness.entrypoints.hide();
   }
@@ -1940,7 +2336,7 @@ test("v2 中遗留的工作区布尔字段不能替代当前工程的名单版�
   let initialState = State.createState(workspaceRoot, now);
   initialState.initialized = true;
   initialState = State.registerProject(initialState, context.projectPath, context.projectName, now);
-  const projectKey = State.projectKey(context.projectPath);
+  const projectKey = workspaceSettingKey(context.projectPath);
   const harness = createProtectedFolderHarness(null, null, null, {
     context,
     initialState,
@@ -1974,7 +2370,7 @@ test("v2 中遗留的工作区布尔字段不能替代当前工程的名单版�
   }
 });
 
-test("每个工程显式开启后才扫描工程外已有和后来新增的素材", async () => {
+test("目录显式开启后，同目录工程共享已有和新增素材的归集授权", async () => {
   const workspaceRoot = "E:\\逐工程开启";
   const enabledContext = projectContext(workspaceRoot, "本期.prproj");
   const otherContext = projectContext(workspaceRoot, "下期.prproj");
@@ -2038,7 +2434,7 @@ test("每个工程显式开启后才扫描工程外已有和后来新增的素�
   });
   await otherHarness.entrypoints.show();
   try {
-    assert.equal(otherHarness.autoCollectToggle.checked, false, "另一个工程仍需自己显式开启");
+    assert.equal(otherHarness.autoCollectToggle.checked, true, "同目录工程应共用授权");
     assert.deepEqual(otherHarness.fsMutationCalls, []);
   } finally {
     otherHarness.entrypoints.hide();
@@ -2178,7 +2574,7 @@ test("旧状态确认新归集策略后保留 baseline 证据，但不再用它�
     assert.match(harness.stateTitle.textContent, /等待 1 个文件写完/);
     assert.equal(
       JSON.parse(harness.localStorage.values.get(MACHINE_SETTINGS_V2_KEY))
-        .autoByProject[State.projectKey(projectPath)],
+        .autoByProject[workspaceSettingKey(projectPath)],
       true,
     );
   } finally {
@@ -2345,7 +2741,7 @@ test("仅打开文件夹失败时不会把正在运行的自动整理显示为�
     await settle();
 
     const settings = JSON.parse(harness.localStorage.values.get(MACHINE_SETTINGS_V2_KEY));
-    assert.equal(settings.autoByProject[State.projectKey("E:\\项目\\测试工程.prproj")], true);
+    assert.equal(settings.autoByProject[workspaceSettingKey("E:\\项目\\测试工程.prproj")], true);
     assert.equal(harness.autoCollectToggle.checked, true);
     assert.notEqual(harness.stateTitle.textContent, "自动整理已暂停");
     assert.notEqual(harness.document.body.dataset.state, "failure");
@@ -2552,7 +2948,7 @@ test("确认移除只删除所选名单项并持久化，同时暂停自动整�
       "只移除用户确认的那一个名单项"
     );
     const machineSettings = JSON.parse(harness.localStorage.values.get(MACHINE_SETTINGS_V2_KEY));
-    assert.equal(machineSettings.autoByProject[State.projectKey("E:\\项目\\测试工程.prproj")], false);
+    assert.equal(machineSettings.autoByProject[workspaceSettingKey("E:\\项目\\测试工程.prproj")], false);
     assert.equal(harness.inventoryCount, inventoryBefore, "名单管理不应启动素材扫描");
     assert.deepEqual(harness.fsMutationCalls, [], "名单管理不应调用任何文件移动或删除 API");
     assert.equal(harness.protectedListCount.textContent, "1 个");
@@ -2619,10 +3015,10 @@ test("不搬动名单变化会暂停同一工程文件夹里的全部工程，�
     "交接版.prproj",
     new Date("2026-09-04T08:01:00.000Z"),
   );
-  fixture.initialMachineSettings.autoByProject[State.projectKey(siblingProjectPath)] = true;
-  fixture.initialMachineSettings.projectSetupByProject[State.projectKey(siblingProjectPath)] = true;
-  fixture.initialMachineSettings.autoByProject[State.projectKey(unrelatedProjectPath)] = true;
-  fixture.initialMachineSettings.projectSetupByProject[State.projectKey(unrelatedProjectPath)] = true;
+  fixture.initialMachineSettings.autoByProject[workspaceSettingKey(siblingProjectPath)] = true;
+  fixture.initialMachineSettings.projectSetupByProject[workspaceSettingKey(siblingProjectPath)] = true;
+  fixture.initialMachineSettings.autoByProject[workspaceSettingKey(unrelatedProjectPath)] = true;
+  fixture.initialMachineSettings.projectSetupByProject[workspaceSettingKey(unrelatedProjectPath)] = true;
 
   const harness = createProtectedFolderHarness(null, null, null, {
     ...fixture,
@@ -2638,9 +3034,9 @@ test("不搬动名单变化会暂停同一工程文件夹里的全部工程，�
     const settings = JSON.parse(
       harness.localStorage.values.get(MACHINE_SETTINGS_V2_KEY),
     );
-    assert.equal(settings.autoByProject[State.projectKey(currentProjectPath)], false);
-    assert.equal(settings.autoByProject[State.projectKey(siblingProjectPath)], false);
-    assert.equal(settings.autoByProject[State.projectKey(unrelatedProjectPath)], true);
+    assert.equal(settings.autoByProject[workspaceSettingKey(currentProjectPath)], false);
+    assert.equal(settings.autoByProject[workspaceSettingKey(siblingProjectPath)], false);
+    assert.equal(settings.autoByProject[workspaceSettingKey(unrelatedProjectPath)], true);
   } finally {
     harness.entrypoints.hide();
   }
@@ -2734,7 +3130,7 @@ test("首次确认不搬动名单后才进入开启自动整理步骤", async ()
   assert.equal(harness.stateAction.textContent, "开始整理此工程");
   assert.ok(harness.latestState && harness.latestState.mediaSpaceId, "空名单确认也会先保存素材空间");
   const settings = JSON.parse(harness.localStorage.values.get(MACHINE_SETTINGS_V2_KEY));
-  const projectKey = State.projectKey("E:\\项目\\测试工程.prproj");
+  const projectKey = workspaceSettingKey("E:\\项目\\测试工程.prproj");
   assert.equal(settings.schemaVersion, 2);
   assert.equal(settings.protectedRevisionByProject[projectKey], harness.latestState.protectedConfigRevision);
   assert.equal(Object.keys(settings.protectedRevisionByProject).length, 1);
@@ -2771,7 +3167,7 @@ test("其他面板更新不搬动名单版本后，当前面板会在扫描前�
     await settle();
     await settle();
 
-    const projectKey = State.projectKey(context.projectPath);
+    const projectKey = workspaceSettingKey(context.projectPath);
     const settings = JSON.parse(sharedLocalStorage.values.get(MACHINE_SETTINGS_V2_KEY));
     assert.equal(harness.stateReadCalls >= 2, true, "扫描前必须重新读取共享工程状态");
     assert.equal(settings.autoByProject[projectKey], false);
@@ -2896,7 +3292,7 @@ test("本机设置保存失败时不会误认为不搬动名单已确认", async
   await settle();
   const retriedSettings = JSON.parse(harness.localStorage.values.get(MACHINE_SETTINGS_V2_KEY));
   assert.equal(
-    retriedSettings.protectedRevisionByProject[State.projectKey("E:\\项目\\测试工程.prproj")],
+    retriedSettings.protectedRevisionByProject[workspaceSettingKey("E:\\项目\\测试工程.prproj")],
     harness.latestState.protectedConfigRevision,
     "重试后可一次提交当前工程和当前名单版本",
   );
@@ -3021,7 +3417,7 @@ test("取消待保存恢复确认时不会写状态、改链或保存工程", as
   assert.match(harness.recoveryConfirmation.textContent, /尚未更新链接或保存工程/);
 });
 
-test("旧事务核对通过后可保留两处文件并安全关闭记录", async () => {
+test("旧事务核对通过后可保留两处文件并暂缓完整记录", async () => {
   const fixture = legacyRecoveryCloseFixture();
   const harness = createProtectedFolderHarness(null, null, null, fixture);
   await harness.entrypoints.show();
@@ -3044,13 +3440,14 @@ test("旧事务核对通过后可保留两处文件并安全关闭记录", async
   assert.equal(harness.latestState.pendingTransaction, null);
   assert.equal(harness.latestState.transactions.length, 0, "人工关闭不能伪装成整理成功");
   assert.equal(harness.latestState.batches[0].fileCount, 0);
-  assert.ok(harness.latestState.activity.some((entry) => entry.message === "已保留现状并关闭旧整理记录"));
+  assert.equal(harness.latestState.deferredTransactions[0].sourcePath, fixture.sourcePath);
+  assert.ok(harness.latestState.activity.some((entry) => entry.message === "已保留现场并暂缓旧整理记录"));
   assert.deepEqual(harness.fsMutationCalls, [], "关闭旧记录不得复制、改名或删除任何文件");
   assert.equal(fixture.clip.relinkCalls, 0);
   assert.equal(fixture.clip.mediaPath, fixture.sourcePath);
   assert.equal(fixture.project.saveCalls, 0);
   const machineSettings = JSON.parse(harness.localStorage.values.get(MACHINE_SETTINGS_V2_KEY));
-  assert.equal(machineSettings.autoByProject[State.projectKey(fixture.context.projectPath)], false);
+  assert.equal(machineSettings.autoByProject[workspaceSettingKey(fixture.context.projectPath)], false);
 });
 
 test("取消关闭旧事务时记录、文件、Premiere 和本机设置全部不变", async () => {
@@ -3305,6 +3702,20 @@ test("恢复页只把目标文件的直接父目录识别为旧编号文件夹",
   assert.doesNotMatch(harness.recoveryConfirmation.textContent, /旧版已经创建的文件夹/);
 });
 
+test("助手预检失败时不创建素材目标、不补链、不保存工程", async () => {
+  const fixture = createOrdinarySafetyFixture({ recycleProbeError: new Error("系统回收助手未响应，素材未处理") });
+  await fixture.harness.entrypoints.show();
+  try {
+    fixture.harness.window.listeners.get("batch-collector:refresh")();
+    await settle();
+    await settle();
+    assert.equal(fixture.projectSaveCalls, 0);
+    assert.equal(fixture.targetPath, "");
+    assert.equal(fixture.harness.latestState.pendingTransaction, null);
+    assert.match(fixture.harness.diagnostics.join("\n"), /回收助手未响应/);
+  } finally { fixture.harness.entrypoints.hide(); }
+});
+
 test("普通整理删源前重新核对完整素材清单，发现额外源路径引用时保留待处理事务", async () => {
   const fixture = createOrdinarySafetyFixture({ extraBeforeDelete: true });
   await fixture.harness.entrypoints.show();
@@ -3485,7 +3896,7 @@ test("整理状态已落盘后本机设置写失败，也不能清掉 pending �
     assert.ok(fixture.harness.localStorage.setCalls > 0, "测试必须实际覆盖本机设置写入失败");
     const persistedSettings = JSON.parse(fixture.harness.localStorage.values.get(MACHINE_SETTINGS_V2_KEY));
     assert.equal(
-      persistedSettings.autoByProject[State.projectKey(fixture.project.path)],
+      persistedSettings.autoByProject[workspaceSettingKey(fixture.project.path)],
       true,
       "本机设置写失败时不能伪造为已暂停或已完成",
     );

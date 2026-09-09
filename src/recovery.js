@@ -61,9 +61,6 @@
       || new Set(expectedItemIds).size !== expectedItemIds.length) {
       return manual("事务缺少完整的素材项身份，或身份存在重复，不能自动恢复");
     }
-    if (!Transaction.hasStrongFileIdentity(pending.sourceFingerprint)) {
-      return manual("事务缺少可核对的原位置文件身份，不能自动恢复");
-    }
     var entryById = {};
     var duplicateCurrentItemIds = [];
     linkedEntries.forEach(function (entry) {
@@ -92,6 +89,33 @@
       : rebuiltIdentity ? candidateEntries : [];
     var sourceLinkCount = resolvedEntries.filter(function (entry) { return Core.samePath(entry.mediaPath, sourcePath); }).length;
     var targetLinkCount = resolvedEntries.filter(function (entry) { return Core.samePath(entry.mediaPath, targetPath); }).length;
+    // Observed paths are useful diagnostics, but cannot replace historical file identity.
+    if (!Transaction.hasStrongFileIdentity(pending.sourceFingerprint)) {
+      var observed = {
+        sourcePath: sourcePath,
+        targetPath: targetPath,
+        sourceExists: sourceExists,
+        targetExists: targetExists,
+        stagingExists: stagingExists,
+        cleanupExists: cleanupExists,
+        cleanupPath: cleanupPath,
+        currentLinkState: sourceLinkCount === expectedItemCount ? "source"
+          : targetLinkCount === expectedItemCount ? "target"
+            : sourceLinkCount + targetLinkCount === expectedItemCount ? "mixed" : "unknown",
+      };
+      for (var location of ["source", "target"]) {
+        if (!observed[location + "Exists"]) continue;
+        try {
+          var observedStat = await Transaction.lstatForIdentity(options.fs, observed[location + "Path"]);
+          if (observedStat && typeof observedStat.isFile === "function" && observedStat.isFile()) {
+            observed[location + "Size"] = Transaction.statSize(observedStat);
+          }
+        } catch (_) {
+          // A failed size read must not turn an old record into a recoverable transaction.
+        }
+      }
+      return manual("已检查当前位置，但旧记录缺少原文件身份凭据，无法证明两处文件属于同一次搬运。自动整理保持暂停；不会移动、删除文件或修改 Premiere 链接。", observed);
+    }
     var sourceChanged = false;
     var currentSourceFingerprint = null;
     var currentTargetFingerprint = null;

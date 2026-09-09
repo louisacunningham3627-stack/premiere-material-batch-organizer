@@ -307,8 +307,32 @@ test("残缺或不安全的原位置身份不能触发自动恢复", async (t) =
       });
 
       assert.equal(result.kind, "manual");
-      assert.match(result.reason, /缺少可核对的原位置文件身份/);
+      assert.match(result.reason, /旧记录缺少原文件身份凭据/);
     });
+  });
+});
+
+test("旧记录缺少原身份仍展示两处文件及链接，但不获得恢复或关闭权限", async () => {
+  await withFixture(async ({ mediaRoot, source, target }) => {
+    await fs.writeFile(source, "clip-data");
+    await fs.writeFile(target, "different-data");
+    const pending = await pendingFor(source);
+    delete pending.sourceFingerprint;
+    const { readOnlyFs, mutations } = trackFsMutations(fs);
+    const result = await Recovery.inspectPending({
+      fs: readOnlyFs, pending, targetPath: target, mediaRoot,
+      linkedEntries: [{ itemId: "item-1", mediaPath: source }],
+    });
+    assert.equal(result.kind, "manual");
+    assert.equal(result.sourceExists, true);
+    assert.equal(result.targetExists, true);
+    assert.equal(result.sourceSize, 9);
+    assert.equal(result.targetSize, 14);
+    assert.equal(result.currentLinkState, "source");
+    assert.equal(result.manualCode, undefined);
+    assert.equal(result.sourceFingerprint, undefined);
+    assert.equal(result.resolvedItemIds, undefined);
+    assert.deepEqual(mutations, []);
   });
 });
 

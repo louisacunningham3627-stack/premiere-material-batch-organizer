@@ -393,6 +393,7 @@
 
   return {
     batchName: batchName,
+    localChineseDateStamp: localChineseDateStamp,
     basename: basename,
     classifyMediaPath: classifyMediaPath,
     dirname: dirname,
